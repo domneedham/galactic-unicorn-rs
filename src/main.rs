@@ -5,8 +5,8 @@
 
 mod config;
 
-use config::GW_A2;
 use embassy_executor::Spawner;
+use embassy_net::tcp::TcpSocket;
 use embassy_net::Ipv4Address;
 use embassy_net::Ipv4Cidr;
 use embassy_net::Stack;
@@ -22,21 +22,27 @@ use embassy_rp::peripherals::PIN_25;
 use embassy_rp::peripherals::PIO1;
 use embassy_rp::pio::InterruptHandler;
 use embassy_rp::pio::Pio;
+use embassy_time::Duration;
 use embassy_time::Timer;
 use heapless::Vec;
 
 use cyw43_pio::PioSpi;
 
 use defmt_rtt as _;
-use embedded_graphics_core::pixelcolor::RgbColor;
 use panic_halt as _;
+use rust_mqtt::client::client::MqttClient;
+use rust_mqtt::utils::rng_generator::CountingRng;
+use static_cell::StaticCell;
 
 use embedded_graphics::mono_font::{ascii::FONT_5X8, MonoTextStyle};
 use embedded_graphics::text::Text;
 use embedded_graphics::Drawable;
+use embedded_graphics_core::pixelcolor::RgbColor;
 use embedded_graphics_core::{pixelcolor::Rgb888, prelude::Point};
 
-use static_cell::StaticCell;
+use rust_mqtt::client::client_config::ClientConfig;
+use rust_mqtt::packet::v5::reason_codes::ReasonCode;
+
 use unicorn_graphics::UnicornGraphics;
 
 use galactic_unicorn_embassy::buttons::UnicornButtons;
@@ -102,10 +108,6 @@ async fn main(spawner: Spawner) {
 
     let style = MonoTextStyle::new(&FONT_5X8, Rgb888::RED);
     let mut graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
-    Text::new("Connecting ...", Point::new(0, 7), style)
-        .draw(&mut graphics)
-        .unwrap();
-    gu.update_and_draw(&graphics).await;
 
     // wifi
     let pwr = Output::new(p.PIN_23, Level::Low);
@@ -157,10 +159,34 @@ async fn main(spawner: Spawner) {
         }
     }
 
+    let mut rx_buffer = [0; 4096];
+    let mut tx_buffer = [0; 4096];
+    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+    socket.set_timeout(Some(Duration::from_secs(10)));
+    let host_addr = embassy_net::Ipv4Address::new(192, 168, 1, 20);
+    socket.connect((host_addr, 1883)).await;
+
+    let mut config = ClientConfig::new(
+        rust_mqtt::client::client_config::MqttVersion::MQTTv5,
+        CountingRng(20000),
+    );
+    config.add_max_subscribe_qos(rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS1);
+    config.add_client_id("client");
+    // config.add_username(USERNAME);
+    // config.add_password(PASSWORD);
+    config.max_packet_size = 100;
+    let mut recv_buffer = [0; 80];
+    let mut write_buffer = [0; 80];
+
+    let mut client =
+        MqttClient::<_, 5, _>::new(socket, &mut write_buffer, 80, &mut recv_buffer, 80, config);
+
+    client.connect_to_broker().await.unwrap();
+
     // keep track of scroll position
     let mut x: i32 = -53;
 
-    let message = "Welcome to Galactic Unicorn!";
+    let mut message = "Welcome to Galactic Unicorn!";
 
     loop {
         Timer::after_millis(12).await;
@@ -169,6 +195,20 @@ async fn main(spawner: Spawner) {
         x += 1;
         if x > width as i32 {
             x = -53;
+
+            let res = client
+                .send_message(
+                    "hello",
+                    b"Hello from the Galactic Unicorn!",
+                    rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                    true,
+                )
+                .await;
+
+            match res {
+                Ok(_) => message = "Success",
+                Err(_) => message = "Failure",
+            }
         }
 
         graphics.clear_all();

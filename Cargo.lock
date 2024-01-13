@@ -857,6 +857,7 @@ dependencies = [
  "panic-halt",
  "panic-probe",
  "portable-atomic",
+ "rust-mqtt",
  "static_cell",
  "unicorn-graphics",
 ]
@@ -1385,6 +1386,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c92f344f63f950ee36cf4080050e4dce850839b9175da38f9d2ffb69b4dbb21"
 dependencies = [
  "crc-any",
+]
+
+[[package]]
+name = "rust-mqtt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85c4b1fbe2ff726d3309ab119029b939ac8d5dd96a2aa8c82603dc15f3b8546f"
+dependencies = [
+ "defmt",
+ "embedded-io",
+ "embedded-io-async",
+ "heapless",
+ "rand_core",
 ]
 
 [[package]]
