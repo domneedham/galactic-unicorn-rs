@@ -514,6 +514,7 @@ source = "git+https://github.com/embassy-rs/embassy#8e7f477b01507044471b0b247aea
 dependencies = [
  "cfg-if",
  "critical-section 1.1.2",
+ "defmt",
  "embedded-io-async",
  "futures-util",
  "heapless",
@@ -849,6 +850,7 @@ dependencies = [
  "embassy-executor",
  "embassy-net",
  "embassy-rp",
+ "embassy-sync",
  "embassy-time",
  "embedded-graphics",
  "embedded-graphics-core",
