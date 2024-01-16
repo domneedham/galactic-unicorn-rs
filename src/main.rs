@@ -172,12 +172,7 @@ async fn main(spawner: Spawner) {
         if x > width as i32 {
             x = -53;
 
-            let message = MqttMessage {
-                topic: "galactic_unicorn/debug",
-                text: "Hi there from channel",
-                qos: rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                retain: true,
-            };
+            let message = MqttMessage::debug("Hi there from channel");
             mqtt::SEND_CHANNEL.send(message).await;
         }
 
@@ -188,23 +183,13 @@ async fn main(spawner: Spawner) {
         gu.update_and_draw(&graphics).await;
 
         if gu.is_button_pressed(UnicornButtons::BrightnessUp) {
-            let message = MqttMessage {
-                topic: "galactic_unicorn/debug",
-                text: "Brightness increased by 1",
-                qos: rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                retain: true,
-            };
+            let message = MqttMessage::debug("Brightness increased by 1");
             mqtt::SEND_CHANNEL.send(message).await;
             gu.increase_brightness(1);
         }
 
         if gu.is_button_pressed(UnicornButtons::BrightnessDown) {
-            let message = MqttMessage {
-                topic: "galactic_unicorn/debug",
-                text: "Brightness decreased by 1",
-                qos: rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                retain: true,
-            };
+            let message = MqttMessage::debug("Brightness decreased by 1");
             mqtt::SEND_CHANNEL.send(message).await;
             gu.decrease_brightness(1);
         }

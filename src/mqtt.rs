@@ -10,7 +10,20 @@ pub struct MqttMessage<'a> {
     pub retain: bool,
 }
 
+impl<'a> MqttMessage<'a> {
+    pub fn debug(text: &'a str) -> Self {
+        Self {
+            topic: "debug",
+            text,
+            qos: QualityOfService::QoS0,
+            retain: false,
+        }
+    }
+}
+
 pub mod clients {
+    use core::fmt::Write;
+
     use cortex_m::singleton;
     use embassy_net::{tcp::TcpSocket, Stack};
     use embassy_time::Duration;
@@ -20,6 +33,7 @@ pub mod clients {
     };
 
     use super::SEND_CHANNEL;
+    use crate::BASE_MQTT_TOPIC;
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
@@ -52,9 +66,14 @@ pub mod clients {
         loop {
             let message = SEND_CHANNEL.receive().await;
 
+            let mut topic = heapless::String::<256>::new();
+            _ = write!(topic, "{BASE_MQTT_TOPIC}");
+            let message_topic = message.topic;
+            _ = write!(topic, "{message_topic}");
+
             let _ = client
                 .send_message(
-                    message.topic,
+                    topic.as_str(),
                     message.text.as_bytes(),
                     message.qos,
                     message.retain,
