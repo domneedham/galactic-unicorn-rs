@@ -4,6 +4,7 @@
 #![no_main]
 
 mod config;
+mod display;
 mod mqtt;
 
 use embassy_executor::Spawner;
@@ -39,9 +40,7 @@ use embedded_graphics_core::{pixelcolor::Rgb888, prelude::Point};
 
 use unicorn_graphics::UnicornGraphics;
 
-use galactic_unicorn_embassy::buttons::UnicornButtons;
 use galactic_unicorn_embassy::pins::{UnicornButtonPins, UnicornDisplayPins, UnicornPins};
-use galactic_unicorn_embassy::GalacticUnicorn;
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 
 use crate::config::*;
@@ -99,10 +98,16 @@ async fn main(spawner: Spawner) {
         },
     };
 
-    let mut gu = GalacticUnicorn::new(p.PIO0, unipins, p.DMA_CH0);
+    display::init(p.PIO0, p.DMA_CH0, unipins).await;
+    spawner.spawn(display::draw_on_display_task()).unwrap();
 
     let style = MonoTextStyle::new(&FONT_5X8, Rgb888::RED);
     let mut graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
+
+    Text::new("Starting ...", Point::new(0, 7), style)
+        .draw(&mut graphics)
+        .unwrap();
+    display::update_display(&graphics).await;
 
     // wifi
     let pwr = Output::new(p.PIN_23, Level::Low);
@@ -165,30 +170,20 @@ async fn main(spawner: Spawner) {
     let message = "Welcome to Galactic Unicorn!";
 
     loop {
-        Timer::after_millis(12).await;
+        Timer::after_millis(10).await;
 
         let width = message.len() * style.font.character_size.width as usize;
         x += 1;
         if x > width as i32 {
             x = -53;
 
-            MqttMessage::debug("Hi there from channel").send().await;
+            MqttMessage::debug("Display loop finished").send().await;
         }
 
         graphics.clear_all();
         Text::new(message, Point::new((0 - x) as i32, 7), style)
             .draw(&mut graphics)
             .unwrap();
-        gu.update_and_draw(&graphics).await;
-
-        if gu.is_button_pressed(UnicornButtons::BrightnessUp) {
-            MqttMessage::debug("Brightness increased by 1").send().await;
-            gu.increase_brightness(1);
-        }
-
-        if gu.is_button_pressed(UnicornButtons::BrightnessDown) {
-            MqttMessage::debug("Brightness decreased by 1").send().await;
-            gu.decrease_brightness(1);
-        }
+        display::update_display(&graphics).await;
     }
 }

@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-galactic-unicorn-embassy = { version = "0.1.0", git = "https://github.com/domneedham/pimoroni-unicorn-rs" }
-unicorn-graphics = { version = "0.1.0", git = "https://github.com/domneedham/pimoroni-unicorn-rs" }
+galactic-unicorn-embassy = { version = "0.1.1", git = "https://github.com/domneedham/pimoroni-unicorn-rs" }
+unicorn-graphics = { version = "0.1.1", git = "https://github.com/domneedham/pimoroni-unicorn-rs" }
 embedded-graphics = "0.7.1"
 embedded-graphics-core = "0.3.3"
 
@@ -21,11 +21,11 @@ embassy-rp = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy",
     "unstable-pac",
     "time-driver",
 ] }
-embassy-time = { version = "0.2.0", git = "https://github.com/embassy-rs/embassy", features = [
+embassy-time = { version = "0.3.0", git = "https://github.com/embassy-rs/embassy", features = [
     "defmt",
     "defmt-timestamp-uptime",
 ] }
-embassy-executor = { version = "0.4.0", git = "https://github.com/embassy-rs/embassy", features = [
+embassy-executor = { version = "0.5.0", git = "https://github.com/embassy-rs/embassy", features = [
     "arch-cortex-m",
     "executor-thread",
     "executor-interrupt",
@@ -33,7 +33,7 @@ embassy-executor = { version = "0.4.0", git = "https://github.com/embassy-rs/emb
     "integrated-timers",
     "task-arena-size-32768",
 ] }
-embassy-net = { version = "0.3.0", git = "https://github.com/embassy-rs/embassy", features = [
+embassy-net = { version = "0.4.0", git = "https://github.com/embassy-rs/embassy", features = [
     "defmt",
     "tcp",
     "udp",
