@@ -4,8 +4,8 @@
 #![no_main]
 
 mod config;
-mod display;
 mod mqtt;
+mod unicorn;
 
 use embassy_executor::Spawner;
 use embassy_net::Ipv4Address;
@@ -45,6 +45,7 @@ use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 
 use crate::config::*;
 use crate::mqtt::MqttMessage;
+use crate::unicorn::display;
 
 bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
@@ -98,7 +99,7 @@ async fn main(spawner: Spawner) {
         },
     };
 
-    display::init(p.PIO0, p.DMA_CH0, unipins).await;
+    unicorn::init(p.PIO0, p.DMA_CH0, unipins).await;
     spawner.spawn(display::draw_on_display_task()).unwrap();
 
     let style = MonoTextStyle::new(&FONT_5X8, Rgb888::RED);
@@ -107,7 +108,7 @@ async fn main(spawner: Spawner) {
     Text::new("Starting ...", Point::new(0, 7), style)
         .draw(&mut graphics)
         .unwrap();
-    display::update_display(&graphics).await;
+    display::set_graphics(&graphics).await;
 
     // wifi
     let pwr = Output::new(p.PIN_23, Level::Low);
@@ -159,6 +160,8 @@ async fn main(spawner: Spawner) {
         }
     }
 
+    MqttMessage::debug("Joined wifi network").send().await;
+
     // mqtt send client
     spawner
         .spawn(mqtt::clients::mqtt_send_client(stack))
@@ -184,6 +187,6 @@ async fn main(spawner: Spawner) {
         Text::new(message, Point::new((0 - x) as i32, 7), style)
             .draw(&mut graphics)
             .unwrap();
-        display::update_display(&graphics).await;
+        display::set_graphics(&graphics).await;
     }
 }
