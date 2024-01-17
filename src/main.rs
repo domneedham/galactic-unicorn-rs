@@ -172,8 +172,7 @@ async fn main(spawner: Spawner) {
         if x > width as i32 {
             x = -53;
 
-            let message = MqttMessage::debug("Hi there from channel");
-            mqtt::SEND_CHANNEL.send(message).await;
+            MqttMessage::debug("Hi there from channel").send().await;
         }
 
         graphics.clear_all();
@@ -183,14 +182,12 @@ async fn main(spawner: Spawner) {
         gu.update_and_draw(&graphics).await;
 
         if gu.is_button_pressed(UnicornButtons::BrightnessUp) {
-            let message = MqttMessage::debug("Brightness increased by 1");
-            mqtt::SEND_CHANNEL.send(message).await;
+            MqttMessage::debug("Brightness increased by 1").send().await;
             gu.increase_brightness(1);
         }
 
         if gu.is_button_pressed(UnicornButtons::BrightnessDown) {
-            let message = MqttMessage::debug("Brightness decreased by 1");
-            mqtt::SEND_CHANNEL.send(message).await;
+            MqttMessage::debug("Brightness decreased by 1").send().await;
             gu.decrease_brightness(1);
         }
     }

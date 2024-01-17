@@ -1,7 +1,7 @@
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
 use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
-pub static SEND_CHANNEL: Channel<ThreadModeRawMutex, MqttMessage, 16> = Channel::new();
+static SEND_CHANNEL: Channel<ThreadModeRawMutex, MqttMessage, 16> = Channel::new();
 
 pub struct MqttMessage<'a> {
     pub topic: &'a str,
@@ -18,6 +18,12 @@ impl<'a> MqttMessage<'a> {
             qos: QualityOfService::QoS0,
             retain: false,
         }
+    }
+}
+
+impl MqttMessage<'static> {
+    pub async fn send(self) {
+        SEND_CHANNEL.send(self).await;
     }
 }
 
