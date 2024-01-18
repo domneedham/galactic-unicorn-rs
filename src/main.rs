@@ -7,7 +7,6 @@ mod config;
 mod mqtt;
 mod unicorn;
 
-use cortex_m::asm;
 use embassy_executor::Spawner;
 use embassy_net::Ipv4Address;
 use embassy_net::Ipv4Cidr;
@@ -106,7 +105,7 @@ async fn main(spawner: Spawner) {
     let style = MonoTextStyle::new(&FONT_5X8, Rgb888::RED);
     let mut graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
 
-    Text::new("Starting ...", Point::new(0, 7), style)
+    Text::new("Starting...", Point::new(0, 7), style)
         .draw(&mut graphics)
         .unwrap();
     display::set_graphics(&graphics).await;
@@ -163,10 +162,19 @@ async fn main(spawner: Spawner) {
 
     MqttMessage::debug("Joined wifi network").send().await;
 
-    // mqtt send client
+    // mqtt clients
     spawner
         .spawn(mqtt::clients::mqtt_send_client(stack))
         .unwrap();
+    spawner
+        .spawn(mqtt::clients::mqtt_receive_client(stack))
+        .unwrap();
+
+    graphics.clear_all();
+    Text::new("Waiting...", Point::new(0, 7), style)
+        .draw(&mut graphics)
+        .unwrap();
+    display::set_graphics(&graphics).await;
 
     // // keep track of scroll position
     // let mut x: i32 = -53;
@@ -192,6 +200,6 @@ async fn main(spawner: Spawner) {
     // }
 
     loop {
-        asm::wfi();
+        Timer::after_millis(10).await;
     }
 }

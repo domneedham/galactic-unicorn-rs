@@ -40,6 +40,7 @@ embassy-net = { version = "0.4.0", git = "https://github.com/embassy-rs/embassy"
     "dhcpv4",
     "medium-ethernet",
 ] }
+embassy-futures = { version = "0.1.1", git = "https://github.com/embassy-rs/embassy" }
 cyw43 = { git = "https://github.com/embassy-rs/embassy", features = [
     "defmt",
     "firmware-logs",
