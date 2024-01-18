@@ -33,13 +33,23 @@ pub mod clients {
     use cortex_m::singleton;
     use embassy_net::{tcp::TcpSocket, Stack};
     use embassy_time::Duration;
+    use embedded_graphics::{
+        mono_font::{ascii::FONT_5X8, MonoTextStyle},
+        text::Text,
+    };
+    use embedded_graphics_core::{
+        geometry::Point,
+        pixelcolor::{Rgb888, RgbColor},
+        Drawable,
+    };
     use rust_mqtt::{
         client::{client::MqttClient, client_config::ClientConfig},
         utils::rng_generator::CountingRng,
     };
+    use unicorn_graphics::UnicornGraphics;
 
     use super::SEND_CHANNEL;
-    use crate::BASE_MQTT_TOPIC;
+    use crate::{unicorn::display, BASE_MQTT_TOPIC};
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
@@ -85,6 +95,56 @@ pub mod clients {
                     message.retain,
                 )
                 .await;
+        }
+    }
+
+    #[embassy_executor::task]
+    pub async fn mqtt_receive_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
+        let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
+        let rx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
+
+        let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
+        socket.set_timeout(Some(Duration::from_secs(10)));
+        let host_addr = embassy_net::Ipv4Address::new(192, 168, 1, 20);
+        socket.connect((host_addr, 1883)).await.unwrap();
+
+        let mut config = ClientConfig::new(
+            rust_mqtt::client::client_config::MqttVersion::MQTTv5,
+            CountingRng(20000),
+        );
+        config.add_max_subscribe_qos(rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS1);
+        config.add_client_id("client");
+        // config.add_username(USERNAME);
+        // config.add_password(PASSWORD);
+        config.max_packet_size = 100;
+
+        let mut recv_buffer = [0; 80];
+        let mut write_buffer = [0; 80];
+
+        let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> =
+            MqttClient::<_, 5, _>::new(socket, &mut write_buffer, 80, &mut recv_buffer, 80, config);
+
+        client.connect_to_broker().await.unwrap();
+
+        let mut topic = heapless::String::<256>::new();
+        _ = write!(topic, "{BASE_MQTT_TOPIC}");
+        _ = write!(topic, "display");
+
+        _ = client.subscribe_to_topic(&topic).await;
+
+        loop {
+            match client.receive_message().await {
+                Ok(message) => {
+                    let text = core::str::from_utf8(message.1).unwrap();
+                    let mut graphics = UnicornGraphics::new();
+                    let style = MonoTextStyle::new(&FONT_5X8, Rgb888::RED);
+                    Text::new(text, Point::new(0, 7), style)
+                        .draw(&mut graphics)
+                        .unwrap();
+                    display::set_graphics(&graphics).await;
+                }
+                Err(_) => {}
+            }
         }
     }
 }

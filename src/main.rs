@@ -7,6 +7,7 @@ mod config;
 mod mqtt;
 mod unicorn;
 
+use cortex_m::asm;
 use embassy_executor::Spawner;
 use embassy_net::Ipv4Address;
 use embassy_net::Ipv4Cidr;
@@ -167,26 +168,30 @@ async fn main(spawner: Spawner) {
         .spawn(mqtt::clients::mqtt_send_client(stack))
         .unwrap();
 
-    // keep track of scroll position
-    let mut x: i32 = -53;
+    // // keep track of scroll position
+    // let mut x: i32 = -53;
 
-    let message = "Welcome to Galactic Unicorn!";
+    // let message = "Welcome to Galactic Unicorn!";
+
+    // loop {
+    //     Timer::after_millis(10).await;
+
+    //     let width = message.len() * style.font.character_size.width as usize;
+    //     x += 1;
+    //     if x > width as i32 {
+    //         x = -53;
+
+    //         MqttMessage::debug("Display loop finished").send().await;
+    //     }
+
+    //     graphics.clear_all();
+    //     Text::new(message, Point::new((0 - x) as i32, 7), style)
+    //         .draw(&mut graphics)
+    //         .unwrap();
+    //     display::set_graphics(&graphics).await;
+    // }
 
     loop {
-        Timer::after_millis(10).await;
-
-        let width = message.len() * style.font.character_size.width as usize;
-        x += 1;
-        if x > width as i32 {
-            x = -53;
-
-            MqttMessage::debug("Display loop finished").send().await;
-        }
-
-        graphics.clear_all();
-        Text::new(message, Point::new((0 - x) as i32, 7), style)
-            .draw(&mut graphics)
-            .unwrap();
-        display::set_graphics(&graphics).await;
+        asm::wfi();
     }
 }
