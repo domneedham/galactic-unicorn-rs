@@ -1,11 +1,15 @@
 use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
-use galactic_unicorn_embassy::{pins::UnicornPins, GalacticUnicorn};
+use galactic_unicorn_embassy::{pins::UnicornPins, GalacticUnicorn, HEIGHT, WIDTH};
+use unicorn_graphics::UnicornGraphics;
 
 use crate::mqtt::MqttMessage;
 
 type GalacticUnicornType = Mutex<ThreadModeRawMutex, Option<GalacticUnicorn<'static>>>;
 static GALACTIC_UNICORN: GalacticUnicornType = Mutex::new(None);
+
+static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
+    Mutex::new(None);
 
 pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornPins<'static>) {
     let gu = GalacticUnicorn::new(pio, pins, dma);
@@ -14,19 +18,178 @@ pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornPins<'static>) {
 }
 
 pub mod display {
+    use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
     use embassy_time::Timer;
+    use embedded_graphics::{
+        mono_font::{ascii::FONT_5X8, MonoTextStyle},
+        text::Text,
+    };
+    use embedded_graphics_core::{
+        geometry::Point,
+        pixelcolor::{Rgb888, RgbColor},
+        Drawable,
+    };
     use galactic_unicorn_embassy::{HEIGHT, WIDTH};
+    use heapless::String;
     use unicorn_graphics::UnicornGraphics;
 
-    use super::GALACTIC_UNICORN;
+    use super::{CURRENT_GRAPHICS, GALACTIC_UNICORN};
 
-    pub async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
+    static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
+    static SYSTEM_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
+
+    enum DisplayChannels {
+        MQTT,
+        SYSTEM,
+    }
+
+    pub struct DisplayMessage {
+        text: String<256>,
+        color: Rgb888,
+        point: Point,
+        channel: DisplayChannels,
+    }
+
+    impl DisplayMessage {
+        pub fn from_mqtt(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
+            let color = match color {
+                Some(x) => x,
+                None => Rgb888::RED,
+            };
+
+            let point = match point {
+                Some(x) => x,
+                None => Point::new(0, 7),
+            };
+
+            let mut heapless_text = String::<256>::new();
+            match heapless_text.push_str(text) {
+                Ok(_) => {}
+                Err(_) => {
+                    heapless_text.push_str("Too many characters!").unwrap();
+                }
+            };
+
+            Self {
+                text: heapless_text,
+                color,
+                point,
+                channel: DisplayChannels::MQTT,
+            }
+        }
+
+        pub fn from_system(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
+            let color = match color {
+                Some(x) => x,
+                None => Rgb888::RED,
+            };
+
+            let point = match point {
+                Some(x) => x,
+                None => Point::new(0, 7),
+            };
+
+            let mut heapless_text = String::<256>::new();
+            match heapless_text.push_str(text) {
+                Ok(_) => {}
+                Err(_) => {
+                    heapless_text.push_str("Too many characters!").unwrap();
+                }
+            };
+
+            Self {
+                text: heapless_text,
+                color,
+                point,
+                channel: DisplayChannels::SYSTEM,
+            }
+        }
+    }
+
+    impl DisplayMessage {
+        pub async fn send(self) {
+            match self.channel {
+                DisplayChannels::MQTT => MQTT_DISPLAY_CHANNEL.send(self).await,
+                DisplayChannels::SYSTEM => SYSTEM_DISPLAY_CHANNEL.send(self).await,
+            }
+        }
+    }
+
+    async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
+        CURRENT_GRAPHICS.lock().await.replace(graphics.clone());
+
         GALACTIC_UNICORN
             .lock()
             .await
             .as_mut()
             .unwrap()
             .set_pixels(graphics);
+    }
+
+    async fn display_internal(
+        graphics: &mut UnicornGraphics<WIDTH, HEIGHT>,
+        message: &DisplayMessage,
+    ) {
+        let style = MonoTextStyle::new(&FONT_5X8, message.color);
+        let width = message.text.len() * style.font.character_size.width as usize;
+
+        if width > WIDTH {
+            let mut x: i32 = -53;
+            loop {
+                if x > width as i32 {
+                    break;
+                }
+
+                graphics.clear_all();
+                Text::new(
+                    message.text.as_str(),
+                    Point::new((message.point.x - x) as i32, message.point.y),
+                    style,
+                )
+                .draw(graphics)
+                .unwrap();
+                set_graphics(graphics).await;
+
+                x += 1;
+                Timer::after_millis(10).await;
+            }
+        } else {
+            graphics.clear_all();
+            Text::new(message.text.as_str(), message.point, style)
+                .draw(graphics)
+                .unwrap();
+            set_graphics(graphics).await;
+        }
+    }
+
+    #[embassy_executor::task]
+    pub async fn process_display_queue_task() {
+        let mut graphics = UnicornGraphics::new();
+        let mut message: Option<DisplayMessage> = None;
+
+        loop {
+            match MQTT_DISPLAY_CHANNEL.try_receive() {
+                Ok(value) => {
+                    message.replace(value);
+                    continue;
+                }
+                Err(_) => {}
+            }
+
+            match SYSTEM_DISPLAY_CHANNEL.try_receive() {
+                Ok(value) => {
+                    message.replace(value);
+                    continue;
+                }
+                Err(_) => {}
+            }
+
+            if message.is_some() {
+                display_internal(&mut graphics, message.as_ref().unwrap()).await;
+            } else {
+                Timer::after_millis(200).await;
+            }
+        }
     }
 
     #[embassy_executor::task]

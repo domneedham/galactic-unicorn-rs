@@ -32,20 +32,12 @@ use defmt_rtt as _;
 use panic_halt as _;
 use static_cell::StaticCell;
 
-use embedded_graphics::mono_font::{ascii::FONT_5X8, MonoTextStyle};
-use embedded_graphics::text::Text;
-use embedded_graphics::Drawable;
-use embedded_graphics_core::pixelcolor::RgbColor;
-use embedded_graphics_core::{pixelcolor::Rgb888, prelude::Point};
-
-use unicorn_graphics::UnicornGraphics;
-
 use galactic_unicorn_embassy::pins::{UnicornButtonPins, UnicornDisplayPins, UnicornPins};
-use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 
 use crate::config::*;
 use crate::mqtt::MqttMessage;
 use crate::unicorn::display;
+use crate::unicorn::display::DisplayMessage;
 
 bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
@@ -101,14 +93,13 @@ async fn main(spawner: Spawner) {
 
     unicorn::init(p.PIO0, p.DMA_CH0, unipins).await;
     spawner.spawn(display::draw_on_display_task()).unwrap();
-
-    let style = MonoTextStyle::new(&FONT_5X8, Rgb888::RED);
-    let mut graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
-
-    Text::new("Starting...", Point::new(0, 7), style)
-        .draw(&mut graphics)
+    spawner
+        .spawn(display::process_display_queue_task())
         .unwrap();
-    display::set_graphics(&graphics).await;
+
+    DisplayMessage::from_system("Starting...", None, None)
+        .send()
+        .await;
 
     // wifi
     let pwr = Output::new(p.PIN_23, Level::Low);
@@ -170,34 +161,9 @@ async fn main(spawner: Spawner) {
         .spawn(mqtt::clients::mqtt_receive_client(stack))
         .unwrap();
 
-    graphics.clear_all();
-    Text::new("Waiting...", Point::new(0, 7), style)
-        .draw(&mut graphics)
-        .unwrap();
-    display::set_graphics(&graphics).await;
-
-    // // keep track of scroll position
-    // let mut x: i32 = -53;
-
-    // let message = "Welcome to Galactic Unicorn!";
-
-    // loop {
-    //     Timer::after_millis(10).await;
-
-    //     let width = message.len() * style.font.character_size.width as usize;
-    //     x += 1;
-    //     if x > width as i32 {
-    //         x = -53;
-
-    //         MqttMessage::debug("Display loop finished").send().await;
-    //     }
-
-    //     graphics.clear_all();
-    //     Text::new(message, Point::new((0 - x) as i32, 7), style)
-    //         .draw(&mut graphics)
-    //         .unwrap();
-    //     display::set_graphics(&graphics).await;
-    // }
+    DisplayMessage::from_system("Waiting for messages...", None, None)
+        .send()
+        .await;
 
     loop {
         Timer::after_millis(10).await;

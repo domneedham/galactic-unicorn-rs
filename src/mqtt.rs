@@ -34,24 +34,18 @@ pub mod clients {
     use embassy_futures::select::{select, Either};
     use embassy_net::{tcp::TcpSocket, Stack};
     use embassy_time::{Duration, Timer};
-    use embedded_graphics::{
-        mono_font::{ascii::FONT_5X8, MonoTextStyle},
-        text::Text,
-    };
     use embedded_graphics_core::{
         geometry::Point,
         pixelcolor::{Rgb888, RgbColor},
-        Drawable,
     };
     use rust_mqtt::{
         client::{client::MqttClient, client_config::ClientConfig},
         packet::v5::reason_codes::ReasonCode,
         utils::rng_generator::CountingRng,
     };
-    use unicorn_graphics::UnicornGraphics;
 
     use super::{MqttMessage, SEND_CHANNEL};
-    use crate::{unicorn::display, BASE_MQTT_TOPIC};
+    use crate::{unicorn::display::DisplayMessage, BASE_MQTT_TOPIC};
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
@@ -160,14 +154,10 @@ pub mod clients {
                 Either::First(received_message) => match received_message {
                     Ok(message) => {
                         MqttMessage::debug("Received text").send().await;
-
                         let text = core::str::from_utf8(message.1).unwrap();
-                        let mut graphics = UnicornGraphics::new();
-                        let style = MonoTextStyle::new(&FONT_5X8, Rgb888::RED);
-                        Text::new(text, Point::new(0, 7), style)
-                            .draw(&mut graphics)
-                            .unwrap();
-                        display::set_graphics(&graphics).await;
+                        DisplayMessage::from_mqtt(text, Some(Rgb888::RED), Some(Point::new(0, 7)))
+                            .send()
+                            .await;
                     }
                     Err(code) => {
                         show_reason_code(code).await;
@@ -241,11 +231,6 @@ pub mod clients {
 
     async fn show_reason_code(code: ReasonCode) {
         let text = get_reason_code(code);
-        let mut graphics = UnicornGraphics::new();
-        let style = MonoTextStyle::new(&FONT_5X8, Rgb888::RED);
-        Text::new(text, Point::new(0, 7), style)
-            .draw(&mut graphics)
-            .unwrap();
-        display::set_graphics(&graphics).await;
+        DisplayMessage::from_system(text, None, None).send().await;
     }
 }
