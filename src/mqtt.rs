@@ -231,6 +231,8 @@ pub mod clients {
 
     async fn show_reason_code(code: ReasonCode) {
         let text = get_reason_code(code);
-        DisplayMessage::from_system(text, None, None).send().await;
+        DisplayMessage::from_system(text, None, None)
+            .send_and_replace_queue()
+            .await;
     }
 }
