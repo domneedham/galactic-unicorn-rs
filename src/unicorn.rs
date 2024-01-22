@@ -1,24 +1,20 @@
 use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
-use galactic_unicorn_embassy::{pins::UnicornPins, GalacticUnicorn, HEIGHT, WIDTH};
-use unicorn_graphics::UnicornGraphics;
+use galactic_unicorn_embassy::{pins::UnicornDisplayPins, GalacticUnicorn};
 
 use crate::mqtt::MqttMessage;
 
 type GalacticUnicornType = Mutex<ThreadModeRawMutex, Option<GalacticUnicorn<'static>>>;
 static GALACTIC_UNICORN: GalacticUnicornType = Mutex::new(None);
 
-static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
-    Mutex::new(None);
-
-pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornPins<'static>) {
+pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
     let gu = GalacticUnicorn::new(pio, pins, dma);
     GALACTIC_UNICORN.lock().await.replace(gu);
     MqttMessage::debug("Initialised display").send().await;
 }
 
 pub mod display {
-    use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
+    use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex};
     use embassy_time::{Duration, Instant, Timer};
     use embedded_graphics::{
         mono_font::{ascii::FONT_5X8, MonoTextStyle},
@@ -33,7 +29,10 @@ pub mod display {
     use heapless::String;
     use unicorn_graphics::UnicornGraphics;
 
-    use super::{CURRENT_GRAPHICS, GALACTIC_UNICORN};
+    use super::GALACTIC_UNICORN;
+
+    static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
+        Mutex::new(None);
 
     static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
     static SYSTEM_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();

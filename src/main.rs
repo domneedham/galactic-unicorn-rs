@@ -32,7 +32,7 @@ use defmt_rtt as _;
 use panic_halt as _;
 use static_cell::StaticCell;
 
-use galactic_unicorn_embassy::pins::{UnicornButtonPins, UnicornDisplayPins, UnicornPins};
+use galactic_unicorn_embassy::pins::{UnicornButtonPins, UnicornDisplayPins};
 
 use crate::config::*;
 use crate::mqtt::MqttMessage;
@@ -66,32 +66,30 @@ async fn main(spawner: Spawner) {
     let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
     let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
 
-    let unipins = UnicornPins {
-        display_pins: UnicornDisplayPins {
-            column_clock: p.PIN_13,
-            column_data: p.PIN_14,
-            column_latch: p.PIN_15,
-            column_blank: p.PIN_16,
-            row_bit_0: p.PIN_17,
-            row_bit_1: p.PIN_18,
-            row_bit_2: p.PIN_19,
-            row_bit_3: p.PIN_20,
-        },
-
-        button_pins: UnicornButtonPins {
-            switch_a: Input::new(p.PIN_0, Pull::Up),
-            switch_b: Input::new(p.PIN_1, Pull::Up),
-            switch_c: Input::new(p.PIN_3, Pull::Up),
-            switch_d: Input::new(p.PIN_6, Pull::Up),
-            brightness_up: Input::new(p.PIN_21, Pull::Up),
-            brightness_down: Input::new(p.PIN_26, Pull::Up),
-            volume_up: Input::new(p.PIN_7, Pull::Up),
-            volume_down: Input::new(p.PIN_8, Pull::Up),
-            sleep: Input::new(p.PIN_27, Pull::Up),
-        },
+    let display_pins = UnicornDisplayPins {
+        column_clock: p.PIN_13,
+        column_data: p.PIN_14,
+        column_latch: p.PIN_15,
+        column_blank: p.PIN_16,
+        row_bit_0: p.PIN_17,
+        row_bit_1: p.PIN_18,
+        row_bit_2: p.PIN_19,
+        row_bit_3: p.PIN_20,
     };
 
-    unicorn::init(p.PIO0, p.DMA_CH0, unipins).await;
+    let button_pins = UnicornButtonPins {
+        switch_a: Input::new(p.PIN_0, Pull::Up),
+        switch_b: Input::new(p.PIN_1, Pull::Up),
+        switch_c: Input::new(p.PIN_3, Pull::Up),
+        switch_d: Input::new(p.PIN_6, Pull::Up),
+        brightness_up: Input::new(p.PIN_21, Pull::Up),
+        brightness_down: Input::new(p.PIN_26, Pull::Up),
+        volume_up: Input::new(p.PIN_7, Pull::Up),
+        volume_down: Input::new(p.PIN_8, Pull::Up),
+        sleep: Input::new(p.PIN_27, Pull::Up),
+    };
+
+    unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
     spawner.spawn(display::draw_on_display_task()).unwrap();
     spawner
         .spawn(display::process_display_queue_task())
