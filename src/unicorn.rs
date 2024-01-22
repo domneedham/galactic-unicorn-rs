@@ -152,6 +152,17 @@ pub mod display {
         }
     }
 
+    pub async fn set_brightness(brightness: u8) {
+        GALACTIC_UNICORN
+            .lock()
+            .await
+            .as_mut()
+            .unwrap()
+            .set_brightness(brightness);
+
+        redraw_graphics().await;
+    }
+
     async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
         CURRENT_GRAPHICS.lock().await.replace(graphics.clone());
 
@@ -161,6 +172,15 @@ pub mod display {
             .as_mut()
             .unwrap()
             .set_pixels(graphics);
+    }
+
+    async fn redraw_graphics() {
+        GALACTIC_UNICORN
+            .lock()
+            .await
+            .as_mut()
+            .unwrap()
+            .set_pixels(CURRENT_GRAPHICS.lock().await.as_ref().unwrap());
     }
 
     async fn display_internal(

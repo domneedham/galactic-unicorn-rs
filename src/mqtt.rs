@@ -45,7 +45,10 @@ pub mod clients {
     };
 
     use super::{MqttMessage, SEND_CHANNEL};
-    use crate::{unicorn::display::DisplayMessage, BASE_MQTT_TOPIC};
+    use crate::{
+        unicorn::display::{set_brightness, DisplayMessage},
+        BASE_MQTT_TOPIC,
+    };
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
@@ -140,11 +143,20 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         };
 
-        let mut topic = heapless::String::<256>::new();
-        _ = write!(topic, "{BASE_MQTT_TOPIC}");
-        _ = write!(topic, "display");
+        let mut display_topic = heapless::String::<256>::new();
+        _ = write!(display_topic, "{BASE_MQTT_TOPIC}");
+        _ = write!(display_topic, "display");
 
-        match client.subscribe_to_topic("galactic_unicorn/display").await {
+        match client.subscribe_to_topic(&display_topic).await {
+            Ok(_) => MqttMessage::debug("Subscribed to topic").send().await,
+            Err(code) => send_reason_code(code).await,
+        }
+
+        let mut brightness_topic = heapless::String::<256>::new();
+        _ = write!(brightness_topic, "{BASE_MQTT_TOPIC}");
+        _ = write!(brightness_topic, "display/brightness");
+
+        match client.subscribe_to_topic(&brightness_topic).await {
             Ok(_) => MqttMessage::debug("Subscribed to topic").send().await,
             Err(code) => send_reason_code(code).await,
         }
@@ -153,11 +165,24 @@ pub mod clients {
             match select(client.receive_message(), Timer::after_secs(5)).await {
                 Either::First(received_message) => match received_message {
                     Ok(message) => {
-                        MqttMessage::debug("Received text").send().await;
+                        MqttMessage::debug("Received mqtt message").send().await;
                         let text = core::str::from_utf8(message.1).unwrap();
-                        DisplayMessage::from_mqtt(text, Some(Rgb888::RED), Some(Point::new(0, 7)))
+
+                        if message.0 == &display_topic {
+                            DisplayMessage::from_mqtt(
+                                text,
+                                Some(Rgb888::RED),
+                                Some(Point::new(0, 7)),
+                            )
                             .send()
                             .await;
+                        } else if message.0 == &brightness_topic {
+                            let brightness: u8 = match text.parse() {
+                                Ok(value) => value,
+                                Err(_) => 255,
+                            };
+                            set_brightness(brightness).await;
+                        }
                     }
                     Err(code) => {
                         show_reason_code(code).await;
