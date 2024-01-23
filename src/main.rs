@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 
+mod buttons;
 mod config;
 mod mqtt;
 mod unicorn;
@@ -24,6 +25,7 @@ use embassy_rp::peripherals::PIO1;
 use embassy_rp::pio::InterruptHandler;
 use embassy_rp::pio::Pio;
 use embassy_time::Timer;
+use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use heapless::Vec;
 
 use cyw43_pio::PioSpi;
@@ -32,8 +34,10 @@ use defmt_rtt as _;
 use panic_halt as _;
 use static_cell::StaticCell;
 
-use galactic_unicorn_embassy::pins::{UnicornButtonPins, UnicornDisplayPins};
+use galactic_unicorn_embassy::pins::UnicornDisplayPins;
 
+use crate::buttons::brightness_down_task;
+use crate::buttons::brightness_up_task;
 use crate::config::*;
 use crate::mqtt::MqttMessage;
 use crate::unicorn::display;
@@ -76,7 +80,6 @@ async fn main(spawner: Spawner) {
         row_bit_2: p.PIN_19,
         row_bit_3: p.PIN_20,
     };
-
     let button_pins = UnicornButtonPins {
         switch_a: Input::new(p.PIN_0, Pull::Up),
         switch_b: Input::new(p.PIN_1, Pull::Up),
@@ -89,10 +92,20 @@ async fn main(spawner: Spawner) {
         sleep: Input::new(p.PIN_27, Pull::Up),
     };
 
+    spawner
+        .spawn(brightness_up_task(button_pins.brightness_up))
+        .unwrap();
+    spawner
+        .spawn(brightness_down_task(button_pins.brightness_down))
+        .unwrap();
+
     unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
     spawner.spawn(display::draw_on_display_task()).unwrap();
     spawner
         .spawn(display::process_display_queue_task())
+        .unwrap();
+    spawner
+        .spawn(display::process_brightness_buttons_task())
         .unwrap();
 
     DisplayMessage::from_system("Starting...", None, None)

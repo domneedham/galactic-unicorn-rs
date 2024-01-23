@@ -14,6 +14,7 @@ pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
 }
 
 pub mod display {
+    use embassy_futures::select::{select, Either};
     use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex};
     use embassy_time::{Duration, Instant, Timer};
     use embedded_graphics::{
@@ -28,6 +29,8 @@ pub mod display {
     use galactic_unicorn_embassy::{HEIGHT, WIDTH};
     use heapless::String;
     use unicorn_graphics::UnicornGraphics;
+
+    use crate::buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS};
 
     use super::GALACTIC_UNICORN;
 
@@ -260,6 +263,40 @@ pub mod display {
                 display_internal(&mut graphics, message.as_mut().unwrap()).await;
             } else {
                 Timer::after_millis(200).await;
+            }
+        }
+    }
+
+    #[embassy_executor::task]
+    pub async fn process_brightness_buttons_task() {
+        loop {
+            let press_type = select(BRIGHTNESS_UP_PRESS.wait(), BRIGHTNESS_DOWN_PRESS.wait()).await;
+
+            let current_brightness = GALACTIC_UNICORN.lock().await.as_ref().unwrap().brightness;
+
+            match press_type {
+                Either::First(press) => match press {
+                    buttons::ButtonPress::Short => {
+                        set_brightness(current_brightness.saturating_add(10)).await;
+                    }
+                    buttons::ButtonPress::Long => {
+                        set_brightness(255).await;
+                    }
+                    buttons::ButtonPress::Double => {
+                        set_brightness(current_brightness.saturating_add(50)).await
+                    }
+                },
+                Either::Second(press) => match press {
+                    buttons::ButtonPress::Short => {
+                        set_brightness(current_brightness.saturating_sub(10)).await;
+                    }
+                    buttons::ButtonPress::Long => {
+                        set_brightness(20).await;
+                    }
+                    buttons::ButtonPress::Double => {
+                        set_brightness(current_brightness.saturating_sub(50)).await
+                    }
+                },
             }
         }
     }
