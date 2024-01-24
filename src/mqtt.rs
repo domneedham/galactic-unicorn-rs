@@ -46,7 +46,9 @@ pub mod clients {
 
     use super::{MqttMessage, SEND_CHANNEL};
     use crate::{
-        unicorn::display::{set_brightness, DisplayMessage},
+        unicorn::display::{
+            set_brightness, set_new_color_for_current_graphics, DisplayMessage, Rgb888Str,
+        },
         BASE_MQTT_TOPIC,
     };
 
@@ -148,7 +150,11 @@ pub mod clients {
         _ = write!(display_topic, "display");
 
         match client.subscribe_to_topic(&display_topic).await {
-            Ok(_) => MqttMessage::debug("Subscribed to topic").send().await,
+            Ok(_) => {
+                MqttMessage::debug("Subscribed to display topic")
+                    .send()
+                    .await
+            }
             Err(code) => send_reason_code(code).await,
         }
 
@@ -157,7 +163,20 @@ pub mod clients {
         _ = write!(brightness_topic, "display/brightness");
 
         match client.subscribe_to_topic(&brightness_topic).await {
-            Ok(_) => MqttMessage::debug("Subscribed to topic").send().await,
+            Ok(_) => {
+                MqttMessage::debug("Subscribed to brightness topic")
+                    .send()
+                    .await
+            }
+            Err(code) => send_reason_code(code).await,
+        }
+
+        let mut color_topic = heapless::String::<256>::new();
+        _ = write!(color_topic, "{BASE_MQTT_TOPIC}");
+        _ = write!(color_topic, "display/color");
+
+        match client.subscribe_to_topic(&color_topic).await {
+            Ok(_) => MqttMessage::debug("Subscribed to color topic").send().await,
             Err(code) => send_reason_code(code).await,
         }
 
@@ -182,6 +201,13 @@ pub mod clients {
                                 Err(_) => 255,
                             };
                             set_brightness(brightness).await;
+                        } else if message.0 == &color_topic {
+                            match Rgb888::from_str(text) {
+                                Some(color) => {
+                                    set_new_color_for_current_graphics(color).await;
+                                }
+                                None => {}
+                            };
                         }
                     }
                     Err(code) => {
