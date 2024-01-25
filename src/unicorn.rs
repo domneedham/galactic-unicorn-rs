@@ -14,8 +14,6 @@ pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
 }
 
 pub mod display {
-    use core::str::FromStr;
-
     use embassy_futures::select::{select, Either};
     use embassy_sync::{
         blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex,
@@ -28,7 +26,7 @@ pub mod display {
     };
     use embedded_graphics_core::{
         geometry::Point,
-        pixelcolor::{Rgb888, RgbColor, WebColors},
+        pixelcolor::{Rgb888, RgbColor},
         Drawable,
     };
     use galactic_unicorn_embassy::{HEIGHT, WIDTH};
@@ -40,7 +38,7 @@ pub mod display {
     use super::GALACTIC_UNICORN;
 
     static CHANGE_COLOR: PubSubChannel<ThreadModeRawMutex, Rgb888, 1, 2, 1> = PubSubChannel::new();
-
+    static CURRENT_COLOR: Mutex<ThreadModeRawMutex, Rgb888> = Mutex::new(Rgb888::RED);
     static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
         Mutex::new(None);
 
@@ -54,7 +52,7 @@ pub mod display {
 
     pub struct DisplayMessage {
         text: String<256>,
-        color: Rgb888,
+        color: Option<Rgb888>,
         point: Point,
         duration: Duration,
         first_shown: Option<Instant>,
@@ -63,11 +61,6 @@ pub mod display {
 
     impl DisplayMessage {
         pub fn from_mqtt(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
-            let color = match color {
-                Some(x) => x,
-                None => Rgb888::RED,
-            };
-
             let point = match point {
                 Some(x) => x,
                 None => Point::new(0, 7),
@@ -92,11 +85,6 @@ pub mod display {
         }
 
         pub fn from_system(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
-            let color = match color {
-                Some(x) => x,
-                None => Rgb888::RED,
-            };
-
             let point = match point {
                 Some(x) => x,
                 None => Point::new(0, 7),
@@ -161,35 +149,6 @@ pub mod display {
         }
     }
 
-    pub trait Rgb888Str {
-        fn from_str(text: &str) -> Option<Rgb888>;
-    }
-
-    impl Rgb888Str for Rgb888 {
-        fn from_str(text: &str) -> Option<Rgb888> {
-            let mut heapless_text: String<32> = match heapless::String::from_str(text) {
-                Ok(t) => t,
-                Err(_) => return None,
-            };
-
-            heapless_text.make_ascii_uppercase();
-
-            match heapless_text.as_str() {
-                "RED" => Some(Rgb888::RED),
-                "BLUE" => Some(Rgb888::BLUE),
-                "GREEN" => Some(Rgb888::GREEN),
-                "ORANGE" => Some(Rgb888::CSS_ORANGE),
-                "YELLOW" => Some(Rgb888::YELLOW),
-                "PURPLE" => Some(Rgb888::CSS_PURPLE),
-                "PINK" => Some(Rgb888::CSS_PINK),
-                "WHITE" => Some(Rgb888::WHITE),
-                "CYAN" => Some(Rgb888::CYAN),
-                "GOLD" => Some(Rgb888::CSS_GOLD),
-                _ => None,
-            }
-        }
-    }
-
     pub async fn set_brightness(brightness: u8) {
         GALACTIC_UNICORN
             .lock()
@@ -201,7 +160,8 @@ pub mod display {
         redraw_graphics().await;
     }
 
-    pub async fn set_new_color_for_current_graphics(color: Rgb888) {
+    pub async fn set_color(color: Rgb888) {
+        *CURRENT_COLOR.lock().await = color;
         CHANGE_COLOR.publisher().unwrap().publish_immediate(color);
 
         CURRENT_GRAPHICS
@@ -238,7 +198,11 @@ pub mod display {
         graphics: &mut UnicornGraphics<WIDTH, HEIGHT>,
         message: &mut DisplayMessage,
     ) {
-        let mut style = MonoTextStyle::new(&FONT_5X8, message.color);
+        let color = match message.color {
+            Some(x) => x,
+            None => *CURRENT_COLOR.lock().await,
+        };
+        let mut style = MonoTextStyle::new(&FONT_5X8, color);
         let width = message.text.len() * style.font.character_size.width as usize;
         let mut color_subscriber = CHANGE_COLOR.subscriber().unwrap();
 
@@ -283,19 +247,8 @@ pub mod display {
                 .draw(graphics)
                 .unwrap();
             set_graphics(graphics).await;
-            loop {
-                match color_subscriber.try_next_message_pure() {
-                    Some(color) => {
-                        style.text_color = Some(color);
-                        graphics.clear_all();
-                        Text::new(message.text.as_str(), message.point, style)
-                            .draw(graphics)
-                            .unwrap();
-                        set_graphics(graphics).await;
-                    }
-                    None => {}
-                }
 
+            loop {
                 Timer::after_millis(10).await;
 
                 if message.has_min_duration_passed() {
@@ -339,7 +292,7 @@ pub mod display {
                 // replace color in message if needed
                 if !is_message_replaced {
                     match color_subscriber.try_next_message_pure() {
-                        Some(color) => message.as_mut().unwrap().color = color,
+                        Some(color) => message.as_mut().unwrap().color = Some(color),
                         None => {}
                     }
                 }

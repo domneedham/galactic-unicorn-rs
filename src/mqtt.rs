@@ -34,10 +34,7 @@ pub mod clients {
     use embassy_futures::select::{select, Either};
     use embassy_net::{tcp::TcpSocket, Stack};
     use embassy_time::{Duration, Timer};
-    use embedded_graphics_core::{
-        geometry::Point,
-        pixelcolor::{Rgb888, RgbColor},
-    };
+    use embedded_graphics_core::pixelcolor::Rgb888;
     use rust_mqtt::{
         client::{client::MqttClient, client_config::ClientConfig},
         packet::v5::reason_codes::ReasonCode,
@@ -46,9 +43,8 @@ pub mod clients {
 
     use super::{MqttMessage, SEND_CHANNEL};
     use crate::{
-        unicorn::display::{
-            set_brightness, set_new_color_for_current_graphics, DisplayMessage, Rgb888Str,
-        },
+        graphics::colors::Rgb888Str,
+        unicorn::display::{set_brightness, set_color, DisplayMessage},
         BASE_MQTT_TOPIC,
     };
 
@@ -188,13 +184,7 @@ pub mod clients {
                         let text = core::str::from_utf8(message.1).unwrap();
 
                         if message.0 == &display_topic {
-                            DisplayMessage::from_mqtt(
-                                text,
-                                Some(Rgb888::RED),
-                                Some(Point::new(0, 7)),
-                            )
-                            .send()
-                            .await;
+                            DisplayMessage::from_mqtt(text, None, None).send().await;
                         } else if message.0 == &brightness_topic {
                             let brightness: u8 = match text.parse() {
                                 Ok(value) => value,
@@ -204,7 +194,7 @@ pub mod clients {
                         } else if message.0 == &color_topic {
                             match Rgb888::from_str(text) {
                                 Some(color) => {
-                                    set_new_color_for_current_graphics(color).await;
+                                    set_color(color).await;
                                 }
                                 None => {}
                             };

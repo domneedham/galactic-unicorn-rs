@@ -5,6 +5,7 @@
 
 mod buttons;
 mod config;
+mod graphics;
 mod mqtt;
 mod unicorn;
 
