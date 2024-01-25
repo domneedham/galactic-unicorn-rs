@@ -17,7 +17,7 @@ pub mod display {
     use embassy_futures::select::{select, Either};
     use embassy_sync::{
         blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex,
-        pubsub::PubSubChannel,
+        pubsub::PubSubChannel, signal::Signal,
     };
     use embassy_time::{Duration, Instant, Timer};
     use embedded_graphics::{
@@ -44,6 +44,8 @@ pub mod display {
 
     static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
     static SYSTEM_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
+
+    static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
     enum DisplayChannels {
         MQTT,
@@ -130,6 +132,11 @@ pub mod display {
                     self.send().await;
                 }
             }
+        }
+
+        pub async fn send_and_show_now(self) {
+            STOP_CURRENT_DISPLAY.signal(true);
+            self.send_and_replace_queue().await;
         }
     }
 
@@ -223,6 +230,11 @@ pub mod display {
                     x = -(WIDTH as i32);
                 }
 
+                if STOP_CURRENT_DISPLAY.signaled() {
+                    STOP_CURRENT_DISPLAY.reset();
+                    break;
+                }
+
                 match color_subscriber.try_next_message_pure() {
                     Some(color) => style.text_color = Some(color),
                     None => {}
@@ -251,7 +263,8 @@ pub mod display {
             loop {
                 Timer::after_millis(10).await;
 
-                if message.has_min_duration_passed() {
+                if message.has_min_duration_passed() || STOP_CURRENT_DISPLAY.signaled() {
+                    STOP_CURRENT_DISPLAY.reset();
                     break;
                 }
             }
@@ -273,19 +286,20 @@ pub mod display {
                     is_message_replaced = true;
 
                     message.replace(value);
-                    continue;
                 }
                 Err(_) => {}
             }
 
-            match SYSTEM_DISPLAY_CHANNEL.try_receive() {
-                Ok(value) => {
-                    is_message_replaced = true;
+            // if we already have had a message, don't receive system message yet
+            if !is_message_replaced {
+                match SYSTEM_DISPLAY_CHANNEL.try_receive() {
+                    Ok(value) => {
+                        is_message_replaced = true;
 
-                    message.replace(value);
-                    continue;
+                        message.replace(value);
+                    }
+                    Err(_) => {}
                 }
-                Err(_) => {}
             }
 
             if message.is_some() {

@@ -154,6 +154,19 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         }
 
+        let mut display_interrupt_topic = heapless::String::<256>::new();
+        _ = write!(display_interrupt_topic, "{BASE_MQTT_TOPIC}");
+        _ = write!(display_interrupt_topic, "display/interrupt");
+
+        match client.subscribe_to_topic(&display_interrupt_topic).await {
+            Ok(_) => {
+                MqttMessage::debug("Subscribed to display interrupt topic")
+                    .send()
+                    .await
+            }
+            Err(code) => send_reason_code(code).await,
+        }
+
         let mut brightness_topic = heapless::String::<256>::new();
         _ = write!(brightness_topic, "{BASE_MQTT_TOPIC}");
         _ = write!(brightness_topic, "display/brightness");
@@ -185,6 +198,10 @@ pub mod clients {
 
                         if message.0 == &display_topic {
                             DisplayMessage::from_mqtt(text, None, None).send().await;
+                        } else if message.0 == &display_interrupt_topic {
+                            DisplayMessage::from_mqtt(text, None, None)
+                                .send_and_show_now()
+                                .await;
                         } else if message.0 == &brightness_topic {
                             let brightness: u8 = match text.parse() {
                                 Ok(value) => value,
