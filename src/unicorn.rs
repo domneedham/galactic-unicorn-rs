@@ -42,6 +42,8 @@ pub mod display {
     static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
         Mutex::new(None);
 
+    static INTERRUPT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 1> =
+        Channel::new();
     static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
     static SYSTEM_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
 
@@ -136,7 +138,7 @@ pub mod display {
 
         pub async fn send_and_show_now(self) {
             STOP_CURRENT_DISPLAY.signal(true);
-            self.send_and_replace_queue().await;
+            INTERRUPT_DISPLAY_CHANNEL.send(self).await;
         }
     }
 
@@ -281,13 +283,21 @@ pub mod display {
         let mut is_message_replaced = false;
 
         loop {
-            match MQTT_DISPLAY_CHANNEL.try_receive() {
-                Ok(value) => {
-                    is_message_replaced = true;
-
-                    message.replace(value);
+            match INTERRUPT_DISPLAY_CHANNEL.try_receive() {
+                Ok(mut value) => {
+                    display_internal(&mut graphics, &mut value).await;
                 }
                 Err(_) => {}
+            };
+
+            if !is_message_replaced {
+                match MQTT_DISPLAY_CHANNEL.try_receive() {
+                    Ok(value) => {
+                        is_message_replaced = true;
+                        message.replace(value);
+                    }
+                    Err(_) => {}
+                }
             }
 
             // if we already have had a message, don't receive system message yet
@@ -295,7 +305,6 @@ pub mod display {
                 match SYSTEM_DISPLAY_CHANNEL.try_receive() {
                     Ok(value) => {
                         is_message_replaced = true;
-
                         message.replace(value);
                     }
                     Err(_) => {}
