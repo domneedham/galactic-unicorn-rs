@@ -37,6 +37,7 @@ embassy-net = { version = "0.4.0", features = [
     "udp",
     "dhcpv4",
     "medium-ethernet",
+    "dns",
 ] }
 embassy-futures = { version = "0.1.1" }
 cyw43 = { version = "0.1.0", features = ["defmt", "firmware-logs"] }
@@ -46,12 +47,17 @@ defmt = "0.3"
 defmt-rtt = "0.3"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 panic-halt = "0.2.0"
-static_cell = "2"
+static_cell = { version = "2", features = ["nightly"] }
 portable-atomic = { version = "1.5", features = ["critical-section"] }
 heapless = "0.8.0"
 rust-mqtt = { version = "0.2.0", features = [
     "no_std",
 ], default-features = false }
+
+thiserror-no-std = "2.0"
+sntpc = { version = "0.3.4", features = ["async"], default-features = false }
+no-std-net = "0.6"
+chrono = { version = "0.4", default-features = false }
 
 [patch.crates-io]
 embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "17851c7" }

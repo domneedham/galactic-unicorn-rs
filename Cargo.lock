@@ -147,6 +147,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "chrono"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f13690e35a5e4ace198e7beea2895d29f3a9cc55015fcebe6336bd2010af9eb"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -858,6 +867,7 @@ dependencies = [
 name = "galactic-unicorn-rs"
 version = "0.1.1"
 dependencies = [
+ "chrono",
  "cortex-m",
  "cortex-m-rt",
  "cyw43",
@@ -874,11 +884,14 @@ dependencies = [
  "embedded-graphics-core",
  "galactic-unicorn-embassy",
  "heapless",
+ "no-std-net",
  "panic-halt",
  "panic-probe",
  "portable-atomic",
  "rust-mqtt",
+ "sntpc",
  "static_cell",
+ "thiserror-no-std",
  "unicorn-graphics",
 ]
 
@@ -1497,6 +1510,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sntpc"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "629a9f38f83d7b8a14c702deecc8e431220b1570d3d927daa567b87d69346524"
+dependencies = [
+ "no-std-net",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1590,6 +1612,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.48",
+]
+
+[[package]]
+name = "thiserror-impl-no-std"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58e6318948b519ba6dc2b442a6d0b904ebfb8d411a3ad3e07843615a72249758"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "thiserror-no-std"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ad459d94dd517257cc96add8a43190ee620011bb6e6cdc82dafd97dfafafea"
+dependencies = [
+ "thiserror-impl-no-std",
 ]
 
 [[package]]

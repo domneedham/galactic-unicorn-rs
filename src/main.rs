@@ -2,11 +2,13 @@
 
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
 
 mod buttons;
 mod config;
 mod graphics;
 mod mqtt;
+mod time;
 mod unicorn;
 
 use embassy_executor::Spawner;
@@ -25,6 +27,7 @@ use embassy_rp::peripherals::PIN_25;
 use embassy_rp::peripherals::PIO1;
 use embassy_rp::pio::InterruptHandler;
 use embassy_rp::pio::Pio;
+use embassy_time::Duration;
 use embassy_time::Timer;
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use heapless::Vec;
@@ -33,6 +36,7 @@ use cyw43_pio::PioSpi;
 
 use defmt_rtt as _;
 use panic_halt as _;
+use static_cell::make_static;
 use static_cell::StaticCell;
 
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
@@ -136,9 +140,11 @@ async fn main(spawner: Spawner) {
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
 
+    let mut addresses: Vec<Ipv4Address, 3> = Vec::new();
+    addresses.insert(0, Ipv4Address::new(1, 1, 1, 1)).unwrap();
     let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
         address: Ipv4Cidr::new(Ipv4Address::new(IP_A1, IP_A2, IP_A3, IP_A4), PREFIX_LENGTH),
-        dns_servers: Vec::new(),
+        dns_servers: addresses,
         gateway: Some(Ipv4Address::new(GW_A1, GW_A2, GW_A3, GW_A4)),
     });
     // Generate random seed
@@ -146,11 +152,11 @@ async fn main(spawner: Spawner) {
 
     // Init network stack
     static STACK: StaticCell<Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
-    static RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
     let stack = &*STACK.init(Stack::new(
         net_device,
         config,
-        RESOURCES.init(StackResources::<2>::new()),
+        RESOURCES.init(StackResources::<10>::new()),
         seed,
     ));
 
@@ -159,8 +165,18 @@ async fn main(spawner: Spawner) {
     loop {
         match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
             Ok(_) => break,
-            Err(_) => {}
+            Err(_) => {
+                DisplayMessage::from_system("Joining wifi...", None, None)
+                    .send()
+                    .await;
+                Timer::after(Duration::from_secs(2)).await;
+            }
         }
+    }
+
+    // Wait for DHCP, not necessary when using static IP
+    while !stack.is_config_up() {
+        Timer::after_millis(100).await;
     }
 
     MqttMessage::debug("Joined wifi network").send().await;
@@ -173,11 +189,19 @@ async fn main(spawner: Spawner) {
         .spawn(mqtt::clients::mqtt_receive_client(stack))
         .unwrap();
 
-    DisplayMessage::from_system("Waiting for messages...", None, None)
+    DisplayMessage::from_system("Ready to receive messages...", None, None)
         .send()
         .await;
 
+    let clock = make_static!(time::Clock::new());
+
+    spawner.spawn(time::ntp_worker(stack, clock)).unwrap();
+
     loop {
-        Timer::after_millis(10).await;
+        Timer::after_secs(1).await;
+        let time = clock.get_date_time_str().await;
+        DisplayMessage::from_app(&time, None, None, Some(Duration::from_millis(500)))
+            .send_and_replace_queue()
+            .await;
     }
 }
