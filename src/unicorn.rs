@@ -46,12 +46,14 @@ pub mod display {
         Channel::new();
     static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
     static SYSTEM_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
+    static APP_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
 
     static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
     enum DisplayChannels {
         MQTT,
         SYSTEM,
+        APP,
     }
 
     pub struct DisplayMessage {
@@ -111,6 +113,40 @@ pub mod display {
                 channel: DisplayChannels::SYSTEM,
             }
         }
+
+        pub fn from_app(
+            text: &str,
+            color: Option<Rgb888>,
+            point: Option<Point>,
+            duration: Option<Duration>,
+        ) -> Self {
+            let point = match point {
+                Some(x) => x,
+                None => Point::new(0, 7),
+            };
+
+            let duration = match duration {
+                Some(x) => x,
+                None => Duration::from_secs(3),
+            };
+
+            let mut heapless_text = String::<256>::new();
+            match heapless_text.push_str(text) {
+                Ok(_) => {}
+                Err(_) => {
+                    heapless_text.push_str("Too many characters!").unwrap();
+                }
+            };
+
+            Self {
+                text: heapless_text,
+                color,
+                point,
+                duration,
+                first_shown: None,
+                channel: DisplayChannels::APP,
+            }
+        }
     }
 
     impl DisplayMessage {
@@ -118,6 +154,7 @@ pub mod display {
             match self.channel {
                 DisplayChannels::MQTT => MQTT_DISPLAY_CHANNEL.send(self).await,
                 DisplayChannels::SYSTEM => SYSTEM_DISPLAY_CHANNEL.send(self).await,
+                DisplayChannels::APP => APP_DISPLAY_CHANNEL.send(self).await,
             }
         }
 
@@ -131,6 +168,10 @@ pub mod display {
                 DisplayChannels::SYSTEM => {
                     // clear channel
                     while SYSTEM_DISPLAY_CHANNEL.try_receive().is_ok() {}
+                    self.send().await;
+                }
+                DisplayChannels::APP => {
+                    while APP_DISPLAY_CHANNEL.try_receive().is_ok() {}
                     self.send().await;
                 }
             }
@@ -300,9 +341,18 @@ pub mod display {
                 }
             }
 
-            // if we already have had a message, don't receive system message yet
             if !is_message_replaced {
                 match SYSTEM_DISPLAY_CHANNEL.try_receive() {
+                    Ok(value) => {
+                        is_message_replaced = true;
+                        message.replace(value);
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            if !is_message_replaced {
+                match APP_DISPLAY_CHANNEL.try_receive() {
                     Ok(value) => {
                         is_message_replaced = true;
                         message.replace(value);
