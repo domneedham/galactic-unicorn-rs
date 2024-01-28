@@ -44,7 +44,7 @@ pub mod clients {
     use super::{MqttMessage, SEND_CHANNEL};
     use crate::{
         graphics::colors::Rgb888Str,
-        unicorn::display::{set_brightness, set_color, DisplayMessage},
+        unicorn::display::{set_brightness, set_color, DisplayTextMessage},
         BASE_MQTT_TOPIC,
     };
 
@@ -109,7 +109,15 @@ pub mod clients {
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(30)));
         let host_addr = embassy_net::Ipv4Address::new(192, 168, 1, 20);
-        socket.connect((host_addr, 1883)).await.unwrap();
+        match socket.connect((host_addr, 1883)).await {
+            Ok(_) => {}
+            Err(_) => loop {
+                DisplayTextMessage::from_mqtt("Failed to connect to socket", None, None)
+                    .send()
+                    .await;
+                Timer::after_secs(1).await;
+            },
+        };
 
         let mut config = ClientConfig::new(
             rust_mqtt::client::client_config::MqttVersion::MQTTv5,
@@ -197,9 +205,9 @@ pub mod clients {
                         let text = core::str::from_utf8(message.1).unwrap();
 
                         if message.0 == &display_topic {
-                            DisplayMessage::from_mqtt(text, None, None).send().await;
+                            DisplayTextMessage::from_mqtt(text, None, None).send().await;
                         } else if message.0 == &display_interrupt_topic {
-                            DisplayMessage::from_mqtt(text, None, None)
+                            DisplayTextMessage::from_mqtt(text, None, None)
                                 .send_and_show_now()
                                 .await;
                         } else if message.0 == &brightness_topic {
@@ -289,7 +297,7 @@ pub mod clients {
 
     async fn show_reason_code(code: ReasonCode) {
         let text = get_reason_code(code);
-        DisplayMessage::from_system(text, None, None)
+        DisplayTextMessage::from_system(text, None, None)
             .send_and_replace_queue()
             .await;
     }

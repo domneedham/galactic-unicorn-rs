@@ -31,13 +31,14 @@ pub mod display {
     };
     use galactic_unicorn_embassy::{HEIGHT, WIDTH};
     use heapless::String;
-    use unicorn_graphics::UnicornGraphics;
+    use unicorn_graphics::{UnicornGraphics, UnicornGraphicsPixels};
 
     use crate::buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS};
 
     use super::GALACTIC_UNICORN;
 
-    static CHANGE_COLOR: PubSubChannel<ThreadModeRawMutex, Rgb888, 1, 2, 1> = PubSubChannel::new();
+    static CHANGE_COLOR_CHANNEL: PubSubChannel<ThreadModeRawMutex, Rgb888, 1, 2, 1> =
+        PubSubChannel::new();
     static CURRENT_COLOR: Mutex<ThreadModeRawMutex, Rgb888> = Mutex::new(Rgb888::RED);
     static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
         Mutex::new(None);
@@ -56,8 +57,13 @@ pub mod display {
         APP,
     }
 
-    pub struct DisplayMessage {
-        text: String<256>,
+    enum DisplayMessage {
+        Graphics(DisplayGraphicsMessage),
+        Text(DisplayTextMessage),
+    }
+
+    pub struct DisplayTextMessage {
+        text: String<64>,
         color: Option<Rgb888>,
         point: Point,
         duration: Duration,
@@ -65,14 +71,14 @@ pub mod display {
         channel: DisplayChannels,
     }
 
-    impl DisplayMessage {
+    impl DisplayTextMessage {
         pub fn from_mqtt(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
             let point = match point {
                 Some(x) => x,
                 None => Point::new(0, 7),
             };
 
-            let mut heapless_text = String::<256>::new();
+            let mut heapless_text = String::<64>::new();
             match heapless_text.push_str(text) {
                 Ok(_) => {}
                 Err(_) => {
@@ -96,7 +102,7 @@ pub mod display {
                 None => Point::new(0, 7),
             };
 
-            let mut heapless_text = String::<256>::new();
+            let mut heapless_text = String::<64>::new();
             match heapless_text.push_str(text) {
                 Ok(_) => {}
                 Err(_) => {
@@ -130,7 +136,7 @@ pub mod display {
                 None => Duration::from_secs(3),
             };
 
-            let mut heapless_text = String::<256>::new();
+            let mut heapless_text = String::<64>::new();
             match heapless_text.push_str(text) {
                 Ok(_) => {}
                 Err(_) => {
@@ -149,12 +155,18 @@ pub mod display {
         }
     }
 
-    impl DisplayMessage {
+    impl DisplayTextMessage {
         pub async fn send(self) {
             match self.channel {
-                DisplayChannels::MQTT => MQTT_DISPLAY_CHANNEL.send(self).await,
-                DisplayChannels::SYSTEM => SYSTEM_DISPLAY_CHANNEL.send(self).await,
-                DisplayChannels::APP => APP_DISPLAY_CHANNEL.send(self).await,
+                DisplayChannels::MQTT => {
+                    MQTT_DISPLAY_CHANNEL.send(DisplayMessage::Text(self)).await
+                }
+                DisplayChannels::SYSTEM => {
+                    SYSTEM_DISPLAY_CHANNEL
+                        .send(DisplayMessage::Text(self))
+                        .await
+                }
+                DisplayChannels::APP => APP_DISPLAY_CHANNEL.send(DisplayMessage::Text(self)).await,
             }
         }
 
@@ -179,11 +191,13 @@ pub mod display {
 
         pub async fn send_and_show_now(self) {
             STOP_CURRENT_DISPLAY.signal(true);
-            INTERRUPT_DISPLAY_CHANNEL.send(self).await;
+            INTERRUPT_DISPLAY_CHANNEL
+                .send(DisplayMessage::Text(self))
+                .await;
         }
     }
 
-    impl DisplayMessage {
+    impl DisplayTextMessage {
         pub fn set_first_shown(&mut self) {
             if self.first_shown.is_none() {
                 self.first_shown.replace(Instant::now());
@@ -196,6 +210,96 @@ pub mod display {
             }
 
             self.first_shown.unwrap().elapsed() > self.duration
+        }
+    }
+
+    pub struct DisplayGraphicsMessage {
+        pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
+        duration: Duration,
+        first_shown: Option<Instant>,
+        channel: DisplayChannels,
+    }
+
+    impl DisplayGraphicsMessage {
+        pub fn from_app(
+            pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
+            duration: Option<Duration>,
+        ) -> Self {
+            let duration = match duration {
+                Some(x) => x,
+                None => Duration::from_secs(3),
+            };
+
+            Self {
+                pixels,
+                duration,
+                first_shown: None,
+                channel: DisplayChannels::APP,
+            }
+        }
+    }
+
+    impl DisplayGraphicsMessage {
+        pub fn set_first_shown(&mut self) {
+            if self.first_shown.is_none() {
+                self.first_shown.replace(Instant::now());
+            }
+        }
+
+        pub fn has_min_duration_passed(&self) -> bool {
+            if self.first_shown.is_none() {
+                return false;
+            }
+
+            self.first_shown.unwrap().elapsed() > self.duration
+        }
+    }
+
+    impl DisplayGraphicsMessage {
+        pub async fn send(self) {
+            match self.channel {
+                DisplayChannels::MQTT => {
+                    MQTT_DISPLAY_CHANNEL
+                        .send(DisplayMessage::Graphics(self))
+                        .await
+                }
+                DisplayChannels::SYSTEM => {
+                    SYSTEM_DISPLAY_CHANNEL
+                        .send(DisplayMessage::Graphics(self))
+                        .await
+                }
+                DisplayChannels::APP => {
+                    APP_DISPLAY_CHANNEL
+                        .send(DisplayMessage::Graphics(self))
+                        .await
+                }
+            }
+        }
+
+        pub async fn send_and_replace_queue(self) {
+            match self.channel {
+                DisplayChannels::MQTT => {
+                    // clear channel
+                    while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {}
+                    self.send().await;
+                }
+                DisplayChannels::SYSTEM => {
+                    // clear channel
+                    while SYSTEM_DISPLAY_CHANNEL.try_receive().is_ok() {}
+                    self.send().await;
+                }
+                DisplayChannels::APP => {
+                    while APP_DISPLAY_CHANNEL.try_receive().is_ok() {}
+                    self.send().await;
+                }
+            }
+        }
+
+        pub async fn send_and_show_now(self) {
+            STOP_CURRENT_DISPLAY.signal(true);
+            INTERRUPT_DISPLAY_CHANNEL
+                .send(DisplayMessage::Graphics(self))
+                .await;
         }
     }
 
@@ -212,7 +316,10 @@ pub mod display {
 
     pub async fn set_color(color: Rgb888) {
         *CURRENT_COLOR.lock().await = color;
-        CHANGE_COLOR.publisher().unwrap().publish_immediate(color);
+        CHANGE_COLOR_CHANNEL
+            .publisher()
+            .unwrap()
+            .publish_immediate(color);
 
         CURRENT_GRAPHICS
             .lock()
@@ -244,9 +351,28 @@ pub mod display {
             .set_pixels(CURRENT_GRAPHICS.lock().await.as_ref().unwrap());
     }
 
-    async fn display_internal(
+    async fn display_graphics_message(
         graphics: &mut UnicornGraphics<WIDTH, HEIGHT>,
-        message: &mut DisplayMessage,
+        message: &mut DisplayGraphicsMessage,
+    ) {
+        message.set_first_shown();
+
+        graphics.pixels = message.pixels;
+        set_graphics(graphics).await;
+
+        loop {
+            Timer::after_millis(10).await;
+
+            if message.has_min_duration_passed() || STOP_CURRENT_DISPLAY.signaled() {
+                STOP_CURRENT_DISPLAY.reset();
+                break;
+            }
+        }
+    }
+
+    async fn display_text_message(
+        graphics: &mut UnicornGraphics<WIDTH, HEIGHT>,
+        message: &mut DisplayTextMessage,
     ) {
         let color = match message.color {
             Some(x) => x,
@@ -254,7 +380,7 @@ pub mod display {
         };
         let mut style = MonoTextStyle::new(&FONT_5X8, color);
         let width = message.text.len() * style.font.character_size.width as usize;
-        let mut color_subscriber = CHANGE_COLOR.subscriber().unwrap();
+        let mut color_subscriber = CHANGE_COLOR_CHANNEL.subscriber().unwrap();
 
         message.set_first_shown();
 
@@ -319,15 +445,20 @@ pub mod display {
         let mut graphics = UnicornGraphics::new();
         let mut message: Option<DisplayMessage> = None;
 
-        let mut color_subscriber = CHANGE_COLOR.subscriber().unwrap();
+        let mut color_subscriber = CHANGE_COLOR_CHANNEL.subscriber().unwrap();
 
         let mut is_message_replaced = false;
 
         loop {
             match INTERRUPT_DISPLAY_CHANNEL.try_receive() {
-                Ok(mut value) => {
-                    display_internal(&mut graphics, &mut value).await;
-                }
+                Ok(value) => match value {
+                    DisplayMessage::Graphics(mut value) => {
+                        display_graphics_message(&mut graphics, &mut value).await;
+                    }
+                    DisplayMessage::Text(mut value) => {
+                        display_text_message(&mut graphics, &mut value).await;
+                    }
+                },
                 Err(_) => {}
             };
 
@@ -362,15 +493,22 @@ pub mod display {
             }
 
             if message.is_some() {
-                // replace color in message if needed
-                if !is_message_replaced {
-                    match color_subscriber.try_next_message_pure() {
-                        Some(color) => message.as_mut().unwrap().color = Some(color),
-                        None => {}
+                match message.as_mut().unwrap() {
+                    DisplayMessage::Graphics(value) => {
+                        display_graphics_message(&mut graphics, value).await;
+                    }
+                    DisplayMessage::Text(value) => {
+                        // replace color in message if needed
+                        if !is_message_replaced {
+                            match color_subscriber.try_next_message_pure() {
+                                Some(color) => value.color = Some(color),
+                                None => {}
+                            }
+                        }
+
+                        display_text_message(&mut graphics, value).await;
                     }
                 }
-
-                display_internal(&mut graphics, message.as_mut().unwrap()).await;
 
                 is_message_replaced = false;
             } else {

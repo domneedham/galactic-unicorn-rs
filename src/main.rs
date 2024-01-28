@@ -29,7 +29,12 @@ use embassy_rp::pio::InterruptHandler;
 use embassy_rp::pio::Pio;
 use embassy_time::Duration;
 use embassy_time::Timer;
+use embedded_graphics_core::pixelcolor::Rgb888;
+use embedded_graphics_core::pixelcolor::RgbColor;
+use embedded_graphics_core::pixelcolor::WebColors;
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
+use galactic_unicorn_embassy::HEIGHT;
+use galactic_unicorn_embassy::WIDTH;
 use heapless::Vec;
 
 use cyw43_pio::PioSpi;
@@ -40,13 +45,15 @@ use static_cell::make_static;
 use static_cell::StaticCell;
 
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
+use unicorn_graphics::UnicornGraphics;
 
 use crate::buttons::brightness_down_task;
 use crate::buttons::brightness_up_task;
 use crate::config::*;
 use crate::mqtt::MqttMessage;
 use crate::unicorn::display;
-use crate::unicorn::display::DisplayMessage;
+use crate::unicorn::display::DisplayGraphicsMessage;
+use crate::unicorn::display::DisplayTextMessage;
 
 bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
@@ -72,9 +79,6 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
-    let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
-
     let display_pins = UnicornDisplayPins {
         column_clock: p.PIN_13,
         column_data: p.PIN_14,
@@ -97,25 +101,28 @@ async fn main(spawner: Spawner) {
         sleep: Input::new(p.PIN_27, Pull::Up),
     };
 
+    unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
+    DisplayTextMessage::from_system("Starting...", None, None)
+        .send()
+        .await;
+
+    spawner.spawn(display::draw_on_display_task()).unwrap();
+    spawner
+        .spawn(display::process_display_queue_task())
+        .unwrap();
+
     spawner
         .spawn(brightness_up_task(button_pins.brightness_up))
         .unwrap();
     spawner
         .spawn(brightness_down_task(button_pins.brightness_down))
         .unwrap();
-
-    unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
-    spawner.spawn(display::draw_on_display_task()).unwrap();
-    spawner
-        .spawn(display::process_display_queue_task())
-        .unwrap();
     spawner
         .spawn(display::process_brightness_buttons_task())
         .unwrap();
 
-    DisplayMessage::from_system("Starting...", None, None)
-        .send()
-        .await;
+    let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
+    let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
 
     // wifi
     let pwr = Output::new(p.PIN_23, Level::Low);
@@ -166,7 +173,7 @@ async fn main(spawner: Spawner) {
         match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
             Ok(_) => break,
             Err(_) => {
-                DisplayMessage::from_system("Joining wifi...", None, None)
+                DisplayTextMessage::from_system("Joining wifi...", None, None)
                     .send()
                     .await;
                 Timer::after(Duration::from_secs(2)).await;
@@ -174,22 +181,16 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    // Wait for DHCP, not necessary when using static IP
-    while !stack.is_config_up() {
-        Timer::after_millis(100).await;
-    }
-
-    MqttMessage::debug("Joined wifi network").send().await;
-
     // mqtt clients
     spawner
         .spawn(mqtt::clients::mqtt_send_client(stack))
         .unwrap();
+
     spawner
         .spawn(mqtt::clients::mqtt_receive_client(stack))
         .unwrap();
 
-    DisplayMessage::from_system("Ready to receive messages...", None, None)
+    DisplayTextMessage::from_system("Ready to receive messages...", None, None)
         .send()
         .await;
 
@@ -198,10 +199,11 @@ async fn main(spawner: Spawner) {
     spawner.spawn(time::ntp_worker(stack, clock)).unwrap();
 
     loop {
-        Timer::after_secs(1).await;
         let time = clock.get_date_time_str().await;
-        DisplayMessage::from_app(&time, None, None, Some(Duration::from_millis(500)))
+        DisplayTextMessage::from_app(&time, None, None, Some(Duration::from_millis(500)))
             .send_and_replace_queue()
             .await;
+
+        Timer::after_secs(1).await;
     }
 }
