@@ -28,10 +28,10 @@ use embassy_rp::peripherals::PIO1;
 use embassy_rp::pio::InterruptHandler;
 use embassy_rp::pio::Pio;
 use embassy_time::Duration;
+use embassy_time::Instant;
 use embassy_time::Timer;
+use embedded_graphics_core::geometry::Point;
 use embedded_graphics_core::pixelcolor::Rgb888;
-use embedded_graphics_core::pixelcolor::RgbColor;
-use embedded_graphics_core::pixelcolor::WebColors;
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::HEIGHT;
 use galactic_unicorn_embassy::WIDTH;
@@ -50,7 +50,6 @@ use unicorn_graphics::UnicornGraphics;
 use crate::buttons::brightness_down_task;
 use crate::buttons::brightness_up_task;
 use crate::config::*;
-use crate::mqtt::MqttMessage;
 use crate::unicorn::display;
 use crate::unicorn::display::DisplayGraphicsMessage;
 use crate::unicorn::display::DisplayTextMessage;
@@ -101,12 +100,11 @@ async fn main(spawner: Spawner) {
         sleep: Input::new(p.PIN_27, Pull::Up),
     };
 
-    unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
-    DisplayTextMessage::from_system("Starting...", None, None)
+    unicorn::init(p.PIO0, p.DMA_CH0, display_pins, spawner).await;
+    DisplayTextMessage::from_system("Initialising...", None, None)
         .send()
         .await;
 
-    spawner.spawn(display::draw_on_display_task()).unwrap();
     spawner
         .spawn(display::process_display_queue_task())
         .unwrap();
@@ -190,20 +188,82 @@ async fn main(spawner: Spawner) {
         .spawn(mqtt::clients::mqtt_receive_client(stack))
         .unwrap();
 
-    DisplayTextMessage::from_system("Ready to receive messages...", None, None)
-        .send()
-        .await;
-
     let clock = make_static!(time::Clock::new());
-
     spawner.spawn(time::ntp_worker(stack, clock)).unwrap();
+
+    let mut graphics: UnicornGraphics<WIDTH, HEIGHT> = UnicornGraphics::new();
+    let mut heat: [[f32; 13]; 53] = [[0.0; 13]; 53];
 
     loop {
         let time = clock.get_date_time_str().await;
-        DisplayTextMessage::from_app(&time, None, None, Some(Duration::from_millis(500)))
+        DisplayTextMessage::from_app(&time, None, None, Some(Duration::from_secs(1)))
             .send_and_replace_queue()
             .await;
 
         Timer::after_secs(1).await;
+
+        // for y in 0..11 {
+        //     for x in 0..53 {
+        //         let coord = Point { x, y };
+
+        //         let x = x as usize;
+        //         let y = y as usize;
+        //         if heat[x][y] > 0.5 {
+        //             let color = Rgb888::new(255, 255, 180);
+        //             graphics.set_pixel(coord, color);
+        //         } else if heat[x][y] > 0.4 {
+        //             let color = Rgb888::new(220, 160, 0);
+        //             graphics.set_pixel(coord, color);
+        //         } else if heat[x][y] > 0.3 {
+        //             let color = Rgb888::new(180, 50, 0);
+        //             graphics.set_pixel(coord, color);
+        //         } else if heat[x][y] > 0.2 {
+        //             let color = Rgb888::new(40, 40, 40);
+        //             graphics.set_pixel(coord, color);
+        //         }
+
+        //         // Update this pixel by averaging the below pixels
+        //         if x == 0 {
+        //             heat[x][y] =
+        //                 (heat[x][y] + heat[x][y + 2] + heat[x][y + 1] + heat[x + 1][y + 1]) / 4.0;
+        //         } else if x == 52 {
+        //             heat[x][y] =
+        //                 (heat[x][y] + heat[x][y + 2] + heat[x][y + 1] + heat[x - 1][y + 1]) / 4.0;
+        //         } else {
+        //             heat[x][y] = (heat[x][y]
+        //                 + heat[x][y + 2]
+        //                 + heat[x][y + 1]
+        //                 + heat[x - 1][y + 1]
+        //                 + heat[x + 1][y + 1])
+        //                 / 5.0;
+        //         }
+
+        //         heat[x][y] -= 0.01;
+        //         heat[x][y] = heat[x][y].max(0.0);
+        //     }
+        // }
+
+        // DisplayGraphicsMessage::from_app(graphics.pixels, Some(Duration::from_millis(50)))
+        //     .send()
+        //     .await;
+
+        // // clear the bottom row and then add a new fire seed to it
+        // for x in 0..53 {
+        //     heat[x as usize][11] = 0.0;
+        // }
+
+        // // add a new random heat source
+        // for _ in 0..5 {
+        //     let ticks = Instant::now().as_ticks();
+        //     let px: usize = ticks as usize % 51 + 1;
+        //     heat[px][11] = 1.0;
+        //     heat[px + 1][11] = 1.0;
+        //     heat[px - 1][11] = 1.0;
+        //     heat[px][12] = 1.0;
+        //     heat[px + 1][12] = 1.0;
+        //     heat[px - 1][12] = 1.0;
+        // }
+
+        // Timer::after_millis(50).await;
     }
 }

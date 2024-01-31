@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
+use chrono::{DateTime, Duration, Timelike, Utc};
 use core::fmt::Write;
 use embassy_net::{
     dns::DnsQueryType,
@@ -73,22 +73,13 @@ impl Clock {
 
     pub(crate) async fn get_date_time_str(&self) -> String<10> {
         let dt = self.now().await;
-        let day_title = match dt.weekday() {
-            Weekday::Mon => "Mon",
-            Weekday::Tue => "Tue",
-            Weekday::Wed => "Wed",
-            Weekday::Thu => "Thu",
-            Weekday::Fri => "Fri",
-            Weekday::Sat => "Sat",
-            Weekday::Sun => "Sun",
-        };
         let hours = dt.hour();
         let minutes = dt.minute();
         let seconds = dt.second();
 
         let mut result = String::<10>::new();
         let time_delimiter = if seconds % 2 == 0 { ":" } else { " " };
-        write!(result, "{day_title} {hours:02}{time_delimiter}{minutes:02}").unwrap();
+        write!(result, "{hours:02}{time_delimiter}{minutes:02}").unwrap();
         result
     }
 }

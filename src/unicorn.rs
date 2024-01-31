@@ -1,14 +1,15 @@
+use embassy_executor::Spawner;
 use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use galactic_unicorn_embassy::{pins::UnicornDisplayPins, GalacticUnicorn};
 
 use crate::mqtt::MqttMessage;
 
-type GalacticUnicornType = Mutex<ThreadModeRawMutex, Option<GalacticUnicorn<'static>>>;
+type GalacticUnicornType = Mutex<ThreadModeRawMutex, Option<GalacticUnicorn>>;
 static GALACTIC_UNICORN: GalacticUnicornType = Mutex::new(None);
 
-pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
-    let gu = GalacticUnicorn::new(pio, pins, dma);
+pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins, spawner: Spawner) {
+    let gu = GalacticUnicorn::new(pio, pins, dma, spawner);
     GALACTIC_UNICORN.lock().await.replace(gu);
     MqttMessage::debug("Initialised display").send().await;
 }
@@ -21,12 +22,12 @@ pub mod display {
     };
     use embassy_time::{Duration, Instant, Timer};
     use embedded_graphics::{
-        mono_font::{ascii::FONT_5X8, MonoTextStyle},
-        text::Text,
+        mono_font::{ascii::FONT_6X10, MonoTextStyle},
+        text::{Alignment, Baseline, Text},
     };
     use embedded_graphics_core::{
         geometry::Point,
-        pixelcolor::{Rgb888, RgbColor},
+        pixelcolor::{Rgb888, WebColors},
         Drawable,
     };
     use galactic_unicorn_embassy::{HEIGHT, WIDTH};
@@ -39,7 +40,7 @@ pub mod display {
 
     static CHANGE_COLOR_CHANNEL: PubSubChannel<ThreadModeRawMutex, Rgb888, 1, 2, 1> =
         PubSubChannel::new();
-    static CURRENT_COLOR: Mutex<ThreadModeRawMutex, Rgb888> = Mutex::new(Rgb888::RED);
+    static CURRENT_COLOR: Mutex<ThreadModeRawMutex, Rgb888> = Mutex::new(Rgb888::CSS_PURPLE);
     static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
         Mutex::new(None);
 
@@ -75,7 +76,7 @@ pub mod display {
         pub fn from_mqtt(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
             let point = match point {
                 Some(x) => x,
-                None => Point::new(0, 7),
+                None => Point::new(0, (HEIGHT / 2) as i32),
             };
 
             let mut heapless_text = String::<64>::new();
@@ -99,7 +100,7 @@ pub mod display {
         pub fn from_system(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
             let point = match point {
                 Some(x) => x,
-                None => Point::new(0, 7),
+                None => Point::new(0, (HEIGHT / 2) as i32),
             };
 
             let mut heapless_text = String::<64>::new();
@@ -128,7 +129,7 @@ pub mod display {
         ) -> Self {
             let point = match point {
                 Some(x) => x,
-                None => Point::new(0, 7),
+                None => Point::new(0, (HEIGHT / 2) as i32),
             };
 
             let duration = match duration {
@@ -315,18 +316,18 @@ pub mod display {
     }
 
     pub async fn set_color(color: Rgb888) {
-        *CURRENT_COLOR.lock().await = color;
-        CHANGE_COLOR_CHANNEL
-            .publisher()
-            .unwrap()
-            .publish_immediate(color);
-
         CURRENT_GRAPHICS
             .lock()
             .await
             .as_mut()
             .unwrap()
-            .replace_all_colored_with_new(color);
+            .replace_color_with_new(*CURRENT_COLOR.lock().await, color);
+
+        *CURRENT_COLOR.lock().await = color;
+        CHANGE_COLOR_CHANNEL
+            .publisher()
+            .unwrap()
+            .publish_immediate(color);
 
         redraw_graphics().await;
     }
@@ -378,25 +379,25 @@ pub mod display {
             Some(x) => x,
             None => *CURRENT_COLOR.lock().await,
         };
-        let mut style = MonoTextStyle::new(&FONT_5X8, color);
+        let mut style = MonoTextStyle::new(&FONT_6X10, color);
         let width = message.text.len() * style.font.character_size.width as usize;
         let mut color_subscriber = CHANGE_COLOR_CHANNEL.subscriber().unwrap();
 
         message.set_first_shown();
 
         if width > WIDTH {
-            let mut x: i32 = -(WIDTH as i32);
+            let mut x: f32 = -(WIDTH as f32);
 
             loop {
                 // if message has done a full scroll
-                if x > width as i32 {
+                if x > width as f32 {
                     // if message has been shown for minimum duration then break
                     if message.has_min_duration_passed() {
                         break;
                     }
 
                     // otherwise, reset scroll and go again
-                    x = -(WIDTH as i32);
+                    x = -(WIDTH as f32);
                 }
 
                 if STOP_CURRENT_DISPLAY.signaled() {
@@ -409,24 +410,31 @@ pub mod display {
                     None => {}
                 }
 
-                graphics.clear_all();
-                Text::new(
+                graphics.fill(Rgb888::new(5, 5, 5));
+                let mut text = Text::new(
                     message.text.as_str(),
-                    Point::new((message.point.x - x) as i32, message.point.y),
+                    Point::new((message.point.x - x as i32) as i32, message.point.y),
                     style,
-                )
-                .draw(graphics)
-                .unwrap();
+                );
+                text.text_style.baseline = Baseline::Middle;
+                text.draw(graphics).unwrap();
                 set_graphics(graphics).await;
 
-                x += 1;
+                x += 0.15;
                 Timer::after_millis(10).await;
             }
         } else {
-            graphics.clear_all();
-            Text::new(message.text.as_str(), message.point, style)
-                .draw(graphics)
-                .unwrap();
+            graphics.fill(Rgb888::new(5, 5, 5));
+
+            let mut text = Text::new(
+                message.text.as_str(),
+                Point::new((WIDTH / 2) as i32, message.point.y),
+                style,
+            );
+            text.text_style.alignment = Alignment::Center;
+            text.text_style.baseline = Baseline::Middle;
+
+            text.draw(graphics).unwrap();
             set_graphics(graphics).await;
 
             loop {
@@ -548,14 +556,6 @@ pub mod display {
                     }
                 },
             }
-        }
-    }
-
-    #[embassy_executor::task]
-    pub async fn draw_on_display_task() {
-        loop {
-            GALACTIC_UNICORN.lock().await.as_mut().unwrap().draw().await;
-            Timer::after_millis(10).await;
         }
     }
 }
