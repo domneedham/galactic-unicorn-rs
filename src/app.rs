@@ -1,115 +1,81 @@
-use crate::buttons::{SWITCH_A_PRESS, SWITCH_B_PRESS};
+use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS};
+use crate::effects_app::EffectsApp;
 use crate::time::Clock;
-use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
+use crate::unicorn;
+use crate::unicorn::display::DisplayGraphicsMessage;
 
-use embassy_time::Timer;
-use embassy_time::{Duration, Instant};
-
-use galactic_unicorn_embassy::HEIGHT;
-use galactic_unicorn_embassy::WIDTH;
-
-use embedded_graphics_core::geometry::Point;
-use embedded_graphics_core::pixelcolor::Rgb888;
+use embassy_executor::Spawner;
+use embassy_futures::select::{select, Either};
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
+use embassy_time::Duration;
+use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use unicorn_graphics::UnicornGraphics;
 
+static CHANGE_APP: Signal<ThreadModeRawMutex, Apps> = Signal::new();
+
+#[derive(Copy, Clone, PartialEq, Eq)]
 enum Apps {
     Clock,
     Effects,
 }
 
-pub async fn app_loop(clock: &'static Clock) -> ! {
-    let mut graphics: UnicornGraphics<WIDTH, HEIGHT> = UnicornGraphics::new();
+pub trait UnicornApp {
+    async fn display(&self);
+}
 
-    let mut current_app = Apps::Clock;
-    let mut heat: [[f32; 13]; 53] = [[0.0; 13]; 53];
+pub struct AppController {
+    active_app: Mutex<ThreadModeRawMutex, Apps>,
+    clock_app: &'static Clock,
+    effects_app: &'static EffectsApp,
+    spawner: Spawner,
+}
 
+impl AppController {
+    pub fn new(clock: &'static Clock, effects: &'static EffectsApp, spawner: Spawner) -> Self {
+        Self {
+            active_app: Mutex::new(Apps::Clock),
+            clock_app: clock,
+            effects_app: effects,
+            spawner,
+        }
+    }
+
+    pub async fn run(&'static self) -> ! {
+        self.spawner.spawn(display_task(self)).unwrap();
+        loop {
+            let (app, press): (Apps, ButtonPress) =
+                match select(SWITCH_A_PRESS.wait(), SWITCH_B_PRESS.wait()).await {
+                    Either::First(press) => (Apps::Clock, press),
+                    Either::Second(press) => (Apps::Effects, press),
+                };
+
+            *self.active_app.lock().await = app;
+            CHANGE_APP.signal(app);
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn display_task(app_controller: &'static AppController) {
+    let mut blank_graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
+    blank_graphics.clear_all();
     loop {
-        match current_app {
+        let app = *app_controller.active_app.lock().await;
+        match app {
             Apps::Clock => {
-                let time = clock.get_date_time_str().await;
-                DisplayTextMessage::from_app(&time, None, None, Some(Duration::from_secs(1)))
-                    .send_and_replace_queue()
-                    .await;
-
-                Timer::after_secs(1).await;
+                select(app_controller.clock_app.display(), CHANGE_APP.wait()).await;
             }
             Apps::Effects => {
-                for y in 0..11 {
-                    for x in 0..53 {
-                        let coord = Point { x, y };
-
-                        let x = x as usize;
-                        let y = y as usize;
-                        if heat[x][y] > 0.5 {
-                            let color = Rgb888::new(255, 255, 180);
-                            graphics.set_pixel(coord, color);
-                        } else if heat[x][y] > 0.4 {
-                            let color = Rgb888::new(220, 160, 0);
-                            graphics.set_pixel(coord, color);
-                        } else if heat[x][y] > 0.3 {
-                            let color = Rgb888::new(180, 50, 0);
-                            graphics.set_pixel(coord, color);
-                        } else if heat[x][y] > 0.2 {
-                            let color = Rgb888::new(40, 40, 40);
-                            graphics.set_pixel(coord, color);
-                        }
-
-                        // Update this pixel by averaging the below pixels
-                        if x == 0 {
-                            heat[x][y] =
-                                (heat[x][y] + heat[x][y + 2] + heat[x][y + 1] + heat[x + 1][y + 1])
-                                    / 4.0;
-                        } else if x == 52 {
-                            heat[x][y] =
-                                (heat[x][y] + heat[x][y + 2] + heat[x][y + 1] + heat[x - 1][y + 1])
-                                    / 4.0;
-                        } else {
-                            heat[x][y] = (heat[x][y]
-                                + heat[x][y + 2]
-                                + heat[x][y + 1]
-                                + heat[x - 1][y + 1]
-                                + heat[x + 1][y + 1])
-                                / 5.0;
-                        }
-
-                        heat[x][y] -= 0.01;
-                        heat[x][y] = heat[x][y].max(0.0);
-                    }
-                }
-
-                DisplayGraphicsMessage::from_app(graphics.pixels, Some(Duration::from_millis(50)))
-                    .send()
-                    .await;
-
-                // clear the bottom row and then add a new fire seed to it
-                for x in 0..53 {
-                    heat[x as usize][11] = 0.0;
-                }
-
-                // add a new random heat source
-                for _ in 0..5 {
-                    let ticks = Instant::now().as_ticks();
-                    let px: usize = ticks as usize % 51 + 1;
-                    heat[px][11] = 1.0;
-                    heat[px + 1][11] = 1.0;
-                    heat[px - 1][11] = 1.0;
-                    heat[px][12] = 1.0;
-                    heat[px + 1][12] = 1.0;
-                    heat[px - 1][12] = 1.0;
-                }
-
-                Timer::after_millis(50).await;
+                select(app_controller.effects_app.display(), CHANGE_APP.wait()).await;
             }
         };
 
-        if SWITCH_A_PRESS.signaled() {
-            SWITCH_A_PRESS.reset();
-            current_app = Apps::Clock;
-        }
-
-        if SWITCH_B_PRESS.signaled() {
-            SWITCH_B_PRESS.reset();
-            current_app = Apps::Effects;
-        }
+        unicorn::display::STOP_CURRENT_DISPLAY.signal(true);
+        // when switching between apps we want to clear the old queue and blank the display ..
+        DisplayGraphicsMessage::from_app(blank_graphics.pixels, Some(Duration::from_millis(10)))
+            .send_and_replace_queue()
+            .await;
     }
 }

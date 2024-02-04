@@ -50,7 +50,7 @@ pub mod display {
     static SYSTEM_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
     static APP_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
 
-    static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
+    pub static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
     enum DisplayChannels {
         MQTT,

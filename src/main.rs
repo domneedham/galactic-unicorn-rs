@@ -7,6 +7,7 @@
 mod app;
 mod buttons;
 mod config;
+mod effects_app;
 mod graphics;
 mod mqtt;
 mod time;
@@ -191,5 +192,8 @@ async fn main(spawner: Spawner) {
     let clock = make_static!(time::Clock::new());
     spawner.spawn(time::ntp_worker(stack, clock)).unwrap();
 
-    app::app_loop(clock).await;
+    let effects_app = make_static!(effects_app::EffectsApp::new());
+
+    let app_controller = make_static!(app::AppController::new(clock, effects_app, spawner));
+    app_controller.run().await;
 }

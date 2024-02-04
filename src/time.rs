@@ -6,7 +6,7 @@ use embassy_net::{
     IpEndpoint, Stack,
 };
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
-use embassy_time::Instant;
+use embassy_time::{Instant, Timer};
 use heapless::String;
 use no_std_net::{SocketAddr, ToSocketAddrs};
 use sntpc::{
@@ -14,6 +14,8 @@ use sntpc::{
     NtpContext, NtpTimestampGenerator,
 };
 use thiserror_no_std::Error;
+
+use crate::{app::UnicornApp, unicorn::display::DisplayTextMessage};
 
 const POOL_NTP_ADDR: &str = "pool.ntp.org";
 
@@ -81,6 +83,24 @@ impl Clock {
         let time_delimiter = if seconds % 2 == 0 { ":" } else { " " };
         write!(result, "{hours:02}{time_delimiter}{minutes:02}").unwrap();
         result
+    }
+}
+
+impl UnicornApp for Clock {
+    async fn display(&self) {
+        loop {
+            let time = self.get_date_time_str().await;
+            DisplayTextMessage::from_app(
+                &time,
+                None,
+                None,
+                Some(embassy_time::Duration::from_secs(1)),
+            )
+            .send_and_replace_queue()
+            .await;
+
+            Timer::after_secs(1).await;
+        }
     }
 }
 
@@ -173,7 +193,7 @@ pub async fn ntp_worker(stack: &'static Stack<cyw43::NetDriver<'static>>, clock:
             Err(_) => 10,
             Ok(_) => 3600,
         };
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(sleep_sec)).await;
+        Timer::after_secs(sleep_sec).await;
     }
 }
 
