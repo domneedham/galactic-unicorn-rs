@@ -190,7 +190,7 @@ async fn main(spawner: Spawner) {
         .unwrap();
 
     let clock = make_static!(time::Clock::new());
-    spawner.spawn(time::ntp_worker(stack, clock)).unwrap();
+    spawner.spawn(time::ntp::ntp_worker(stack, clock)).unwrap();
 
     let effects_app = make_static!(effects_app::EffectsApp::new());
 

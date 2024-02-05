@@ -3,7 +3,7 @@ use embedded_graphics_core::{geometry::Point, pixelcolor::Rgb888};
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use unicorn_graphics::UnicornGraphics;
 
-use crate::{app::UnicornApp, unicorn::display::DisplayGraphicsMessage};
+use crate::{app::UnicornApp, buttons::ButtonPress, unicorn::display::DisplayGraphicsMessage};
 
 pub struct EffectsApp {}
 
@@ -86,4 +86,10 @@ impl UnicornApp for EffectsApp {
             Timer::after_millis(50).await;
         }
     }
+
+    async fn start(&self) {}
+
+    async fn stop(&self) {}
+
+    async fn button_press(&self, _: ButtonPress) {}
 }

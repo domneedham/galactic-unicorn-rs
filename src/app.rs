@@ -23,6 +23,11 @@ enum Apps {
 
 pub trait UnicornApp {
     async fn display(&self);
+
+    async fn start(&self);
+    async fn stop(&self);
+
+    async fn button_press(&self, press: ButtonPress);
 }
 
 pub struct AppController {
@@ -51,8 +56,25 @@ impl AppController {
                     Either::Second(press) => (Apps::Effects, press),
                 };
 
-            *self.active_app.lock().await = app;
-            CHANGE_APP.signal(app);
+            let current_app = *self.active_app.lock().await;
+            if app == *self.active_app.lock().await {
+                match current_app {
+                    Apps::Clock => self.clock_app.button_press(press).await,
+                    Apps::Effects => self.effects_app.button_press(press).await,
+                }
+            } else {
+                match current_app {
+                    Apps::Clock => self.clock_app.stop().await,
+                    Apps::Effects => self.effects_app.stop().await,
+                };
+
+                *self.active_app.lock().await = app;
+                match app {
+                    Apps::Clock => self.clock_app.start().await,
+                    Apps::Effects => self.effects_app.start().await,
+                };
+                CHANGE_APP.signal(app);
+            }
         }
     }
 }
