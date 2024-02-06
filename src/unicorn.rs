@@ -17,8 +17,11 @@ pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins, spawner: Sp
 pub mod display {
     use embassy_futures::select::{select, Either};
     use embassy_sync::{
-        blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex,
-        pubsub::PubSubChannel, signal::Signal,
+        blocking_mutex::raw::ThreadModeRawMutex,
+        channel::Channel,
+        mutex::Mutex,
+        pubsub::{PubSubChannel, Subscriber},
+        signal::Signal,
     };
     use embassy_time::{Duration, Instant, Timer};
     use embedded_graphics::{
@@ -34,7 +37,11 @@ pub mod display {
     use heapless::String;
     use unicorn_graphics::{UnicornGraphics, UnicornGraphicsPixels};
 
-    use crate::buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS};
+    use crate::{
+        buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
+        graphics::colors::Rgb888Str,
+        mqtt::{DisplayTopics, MqttReceiveMessage},
+    };
 
     use super::GALACTIC_UNICORN;
 
@@ -555,6 +562,39 @@ pub mod display {
                         set_brightness(current_brightness.saturating_sub(50)).await
                     }
                 },
+            }
+        }
+    }
+
+    #[embassy_executor::task]
+    pub async fn process_mqtt_messages_task(
+        topics: DisplayTopics,
+        mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+    ) {
+        loop {
+            let message = subscriber.next_message_pure().await;
+
+            if &message.topic == &topics.display_topic {
+                DisplayTextMessage::from_mqtt(&message.body, None, None)
+                    .send()
+                    .await;
+            } else if &message.topic == &topics.display_interrupt_topic {
+                DisplayTextMessage::from_mqtt(&message.body, None, None)
+                    .send_and_show_now()
+                    .await;
+            } else if &message.topic == &topics.brightness_topic {
+                let brightness: u8 = match message.body.parse() {
+                    Ok(value) => value,
+                    Err(_) => 255,
+                };
+                set_brightness(brightness).await;
+            } else if &message.topic == &topics.color_topic {
+                match Rgb888::from_str(&message.body) {
+                    Some(color) => {
+                        set_color(color).await;
+                    }
+                    None => {}
+                };
             }
         }
     }

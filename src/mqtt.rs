@@ -1,7 +1,18 @@
+use core::fmt::Write;
+
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
+use heapless::String;
 use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
 static SEND_CHANNEL: Channel<ThreadModeRawMutex, MqttMessage, 16> = Channel::new();
+
+#[derive(Clone)]
+pub struct DisplayTopics {
+    pub display_topic: String<64>,
+    pub display_interrupt_topic: String<64>,
+    pub brightness_topic: String<64>,
+    pub color_topic: String<64>,
+}
 
 pub struct MqttMessage<'a> {
     pub topic: &'a str,
@@ -27,26 +38,44 @@ impl MqttMessage<'static> {
     }
 }
 
+#[derive(Clone)]
+pub struct MqttReceiveMessage {
+    pub topic: String<64>,
+    pub body: String<64>,
+}
+
+impl MqttReceiveMessage {
+    pub fn new(topic: &str, body_bytes: &[u8]) -> Self {
+        let mut h_topic = heapless::String::<64>::new();
+        write!(h_topic, "{topic}").unwrap();
+
+        let body = core::str::from_utf8(body_bytes).unwrap();
+        let mut h_body = heapless::String::<64>::new();
+        write!(h_body, "{body}").unwrap();
+
+        Self {
+            topic: h_topic,
+            body: h_body,
+        }
+    }
+}
+
 pub mod clients {
     use core::fmt::Write;
 
     use cortex_m::singleton;
     use embassy_futures::select::{select, Either};
     use embassy_net::{tcp::TcpSocket, Stack};
+    use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, pubsub::Publisher};
     use embassy_time::{Duration, Timer};
-    use embedded_graphics_core::pixelcolor::Rgb888;
     use rust_mqtt::{
         client::{client::MqttClient, client_config::ClientConfig},
         packet::v5::reason_codes::ReasonCode,
         utils::rng_generator::CountingRng,
     };
 
-    use super::{MqttMessage, SEND_CHANNEL};
-    use crate::{
-        graphics::colors::Rgb888Str,
-        unicorn::display::{set_brightness, set_color, DisplayTextMessage},
-        BASE_MQTT_TOPIC,
-    };
+    use super::{DisplayTopics, MqttMessage, MqttReceiveMessage, SEND_CHANNEL};
+    use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
@@ -102,7 +131,11 @@ pub mod clients {
     }
 
     #[embassy_executor::task]
-    pub async fn mqtt_receive_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
+    pub async fn mqtt_receive_client(
+        stack: &'static Stack<cyw43::NetDriver<'static>>,
+        display_topics: DisplayTopics,
+        publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+    ) {
         let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
         let rx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
 
@@ -128,17 +161,11 @@ pub mod clients {
         // config.add_username(USERNAME);
         // config.add_password(PASSWORD);
         config.max_packet_size = 100;
-        let mut recv_buffer = [0; 500];
-        let mut write_buffer = [0; 500];
+        let recv_buffer = singleton!(: [u8; 500] = [0; 500]).unwrap();
+        let write_buffer = singleton!(: [u8; 500] = [0; 500]).unwrap();
 
-        let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> = MqttClient::<_, 5, _>::new(
-            socket,
-            &mut write_buffer,
-            500,
-            &mut recv_buffer,
-            500,
-            config,
-        );
+        let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> =
+            MqttClient::<_, 5, _>::new(socket, write_buffer, 500, recv_buffer, 500, config);
 
         match client.connect_to_broker().await {
             Ok(_) => {
@@ -149,11 +176,10 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         };
 
-        let mut display_topic = heapless::String::<256>::new();
-        _ = write!(display_topic, "{BASE_MQTT_TOPIC}");
-        _ = write!(display_topic, "display");
-
-        match client.subscribe_to_topic(&display_topic).await {
+        match client
+            .subscribe_to_topic(&display_topics.display_topic)
+            .await
+        {
             Ok(_) => {
                 MqttMessage::debug("Subscribed to display topic")
                     .send()
@@ -162,11 +188,10 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         }
 
-        let mut display_interrupt_topic = heapless::String::<256>::new();
-        _ = write!(display_interrupt_topic, "{BASE_MQTT_TOPIC}");
-        _ = write!(display_interrupt_topic, "display/interrupt");
-
-        match client.subscribe_to_topic(&display_interrupt_topic).await {
+        match client
+            .subscribe_to_topic(&display_topics.display_interrupt_topic)
+            .await
+        {
             Ok(_) => {
                 MqttMessage::debug("Subscribed to display interrupt topic")
                     .send()
@@ -175,11 +200,10 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         }
 
-        let mut brightness_topic = heapless::String::<256>::new();
-        _ = write!(brightness_topic, "{BASE_MQTT_TOPIC}");
-        _ = write!(brightness_topic, "display/brightness");
-
-        match client.subscribe_to_topic(&brightness_topic).await {
+        match client
+            .subscribe_to_topic(&display_topics.brightness_topic)
+            .await
+        {
             Ok(_) => {
                 MqttMessage::debug("Subscribed to brightness topic")
                     .send()
@@ -188,11 +212,7 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         }
 
-        let mut color_topic = heapless::String::<256>::new();
-        _ = write!(color_topic, "{BASE_MQTT_TOPIC}");
-        _ = write!(color_topic, "display/color");
-
-        match client.subscribe_to_topic(&color_topic).await {
+        match client.subscribe_to_topic(&display_topics.color_topic).await {
             Ok(_) => MqttMessage::debug("Subscribed to color topic").send().await,
             Err(code) => send_reason_code(code).await,
         }
@@ -202,28 +222,8 @@ pub mod clients {
                 Either::First(received_message) => match received_message {
                     Ok(message) => {
                         MqttMessage::debug("Received mqtt message").send().await;
-                        let text = core::str::from_utf8(message.1).unwrap();
-
-                        if message.0 == &display_topic {
-                            DisplayTextMessage::from_mqtt(text, None, None).send().await;
-                        } else if message.0 == &display_interrupt_topic {
-                            DisplayTextMessage::from_mqtt(text, None, None)
-                                .send_and_show_now()
-                                .await;
-                        } else if message.0 == &brightness_topic {
-                            let brightness: u8 = match text.parse() {
-                                Ok(value) => value,
-                                Err(_) => 255,
-                            };
-                            set_brightness(brightness).await;
-                        } else if message.0 == &color_topic {
-                            match Rgb888::from_str(text) {
-                                Some(color) => {
-                                    set_color(color).await;
-                                }
-                                None => {}
-                            };
-                        }
+                        let message = MqttReceiveMessage::new(message.0, message.1);
+                        publisher.publish(message).await;
                     }
                     Err(code) => {
                         show_reason_code(code).await;

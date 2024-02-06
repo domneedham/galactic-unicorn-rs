@@ -13,6 +13,8 @@ mod mqtt;
 mod time;
 mod unicorn;
 
+use core::fmt::Write;
+
 use embassy_executor::Spawner;
 use embassy_net::Ipv4Address;
 use embassy_net::Ipv4Cidr;
@@ -29,6 +31,8 @@ use embassy_rp::peripherals::PIN_25;
 use embassy_rp::peripherals::PIO1;
 use embassy_rp::pio::InterruptHandler;
 use embassy_rp::pio::Pio;
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::pubsub::PubSubChannel;
 use embassy_time::Duration;
 
 use cyw43_pio::PioSpi;
@@ -37,6 +41,7 @@ use defmt_rtt as _;
 use embassy_time::Timer;
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use heapless::Vec;
+use mqtt::MqttReceiveMessage;
 use panic_halt as _;
 use static_cell::make_static;
 use static_cell::StaticCell;
@@ -48,6 +53,7 @@ use crate::buttons::brightness_up_task;
 use crate::buttons::button_a_task;
 use crate::buttons::button_b_task;
 use crate::config::*;
+use crate::mqtt::DisplayTopics;
 use crate::unicorn::display;
 use crate::unicorn::display::DisplayTextMessage;
 
@@ -180,13 +186,50 @@ async fn main(spawner: Spawner) {
         }
     }
 
+    static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1> =
+        PubSubChannel::new();
+
     // mqtt clients
     spawner
         .spawn(mqtt::clients::mqtt_send_client(stack))
         .unwrap();
 
+    let mut display_topic = heapless::String::<64>::new();
+    _ = write!(display_topic, "{BASE_MQTT_TOPIC}");
+    _ = write!(display_topic, "display");
+
+    let mut display_interrupt_topic = heapless::String::<64>::new();
+    _ = write!(display_interrupt_topic, "{BASE_MQTT_TOPIC}");
+    _ = write!(display_interrupt_topic, "display/interrupt");
+
+    let mut brightness_topic = heapless::String::<64>::new();
+    _ = write!(brightness_topic, "{BASE_MQTT_TOPIC}");
+    _ = write!(brightness_topic, "display/brightness");
+
+    let mut color_topic = heapless::String::<64>::new();
+    _ = write!(color_topic, "{BASE_MQTT_TOPIC}");
+    _ = write!(color_topic, "display/color");
+
+    let display_topics = DisplayTopics {
+        display_topic,
+        display_interrupt_topic,
+        brightness_topic,
+        color_topic,
+    };
+
     spawner
-        .spawn(mqtt::clients::mqtt_receive_client(stack))
+        .spawn(mqtt::clients::mqtt_receive_client(
+            stack,
+            display_topics.clone(),
+            MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
+        ))
+        .unwrap();
+
+    spawner
+        .spawn(display::process_mqtt_messages_task(
+            display_topics,
+            MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
+        ))
         .unwrap();
 
     let clock = make_static!(time::Clock::new());
