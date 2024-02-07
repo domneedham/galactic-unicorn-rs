@@ -1,16 +1,12 @@
-use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
-use core::fmt::Write;
+use chrono::{DateTime, Duration, Utc};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
-use embassy_time::{Instant, Timer};
-use heapless::String;
+use embassy_time::Instant;
 
-use crate::{app::UnicornApp, buttons::ButtonPress, unicorn::display::DisplayTextMessage};
-
-pub struct Clock {
+pub struct Time {
     sys_start: Mutex<CriticalSectionRawMutex, DateTime<Utc>>,
 }
 
-impl Clock {
+impl Time {
     pub fn new() -> Self {
         Self {
             sys_start: Mutex::new(DateTime::UNIX_EPOCH),
@@ -30,90 +26,6 @@ impl Clock {
         let elapsed = Instant::now().as_millis();
         *sys_start + Duration::milliseconds(elapsed as i64)
     }
-
-    pub async fn get_time_str(&self) -> String<10> {
-        let dt = self.now().await;
-        let hours = dt.hour();
-        let minutes = dt.minute();
-        let seconds = dt.second();
-
-        let mut result = String::<10>::new();
-        let time_delimiter = if seconds % 2 == 0 { ":" } else { " " };
-        write!(result, "{hours:02}{time_delimiter}{minutes:02}").unwrap();
-        result
-    }
-
-    pub async fn get_date_str(&self) -> String<10> {
-        let dt = self.now().await;
-        let day_title = match dt.weekday() {
-            Weekday::Mon => "Mon",
-            Weekday::Tue => "Tue",
-            Weekday::Wed => "Wed",
-            Weekday::Thu => "Thu",
-            Weekday::Fri => "Fri",
-            Weekday::Sat => "Sat",
-            Weekday::Sun => "Sun",
-        };
-        let day = dt.day();
-        let month = match dt.month() {
-            1 => "Jan",
-            2 => "Feb",
-            3 => "Mar",
-            4 => "Apr",
-            5 => "May",
-            6 => "Jun",
-            7 => "Jul",
-            8 => "Aug",
-            9 => "Sep",
-            10 => "Oct",
-            11 => "Nov",
-            12 => "Dec",
-            _ => "..",
-        };
-        let mut result = String::<10>::new();
-        write!(result, "{day_title} {day} {month} ").unwrap();
-        result
-    }
-}
-
-impl UnicornApp for Clock {
-    async fn display(&self) {
-        loop {
-            let time = self.get_time_str().await;
-            DisplayTextMessage::from_app(
-                &time,
-                None,
-                None,
-                Some(embassy_time::Duration::from_secs(1)),
-            )
-            .send_and_replace_queue()
-            .await;
-
-            Timer::after_secs(1).await;
-        }
-    }
-
-    async fn start(&self) {}
-
-    async fn stop(&self) {}
-
-    async fn button_press(&self, press: ButtonPress) {
-        match press {
-            ButtonPress::Short => {
-                let date = self.get_date_str().await;
-                DisplayTextMessage::from_app(
-                    &date,
-                    None,
-                    None,
-                    Some(embassy_time::Duration::from_secs(2)),
-                )
-                .send_and_show_now()
-                .await;
-            }
-            ButtonPress::Long => {}
-            ButtonPress::Double => {}
-        }
-    }
 }
 
 pub mod ntp {
@@ -131,7 +43,7 @@ pub mod ntp {
     };
     use thiserror_no_std::Error;
 
-    use super::Clock;
+    use super::Time;
 
     const POOL_NTP_ADDR: &str = "pool.ntp.org";
 
@@ -233,9 +145,9 @@ pub mod ntp {
     }
 
     impl TimestampGen {
-        async fn new(clock: &Clock) -> Self {
+        async fn new(clock: &Time) -> Self {
             let now = clock.now().await;
-            Self { now: now }
+            Self { now }
         }
     }
 
@@ -252,12 +164,9 @@ pub mod ntp {
     }
 
     #[embassy_executor::task]
-    pub async fn ntp_worker(
-        stack: &'static Stack<cyw43::NetDriver<'static>>,
-        clock: &'static Clock,
-    ) {
+    pub async fn ntp_worker(stack: &'static Stack<cyw43::NetDriver<'static>>, time: &'static Time) {
         loop {
-            let sleep_sec = match ntp_request(stack, clock).await {
+            let sleep_sec = match ntp_request(stack, time).await {
                 Err(_) => 10,
                 Ok(_) => 3600,
             };
@@ -267,7 +176,7 @@ pub mod ntp {
 
     async fn ntp_request(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
-        clock: &'static Clock,
+        time: &'static Time,
     ) -> Result<(), SntpcError> {
         let mut addrs = stack.dns_query(POOL_NTP_ADDR, DnsQueryType::A).await?;
         let addr = addrs.pop().ok_or(SntpcError::DnsEmptyResponse)?;
@@ -291,12 +200,12 @@ pub mod ntp {
         socket.bind(1234).unwrap();
 
         let ntp_socket = NtpSocket { sock: socket };
-        let ntp_context = NtpContext::new(TimestampGen::new(clock).await);
+        let ntp_context = NtpContext::new(TimestampGen::new(time).await);
 
         let ntp_result = get_time(sock_addr, ntp_socket, ntp_context).await?;
         let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0)
             .ok_or(SntpcError::BadNtpResponse)?;
-        clock.set_time(now).await;
+        time.set_time(now).await;
 
         Ok(())
     }

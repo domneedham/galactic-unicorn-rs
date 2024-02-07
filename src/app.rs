@@ -1,17 +1,18 @@
-use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS};
-use crate::effects_app::EffectsApp;
-use crate::time::Clock;
-use crate::unicorn;
-use crate::unicorn::display::DisplayGraphicsMessage;
-
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Duration;
+
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use unicorn_graphics::UnicornGraphics;
+
+use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS};
+use crate::clock_app::ClockApp;
+use crate::effects_app::EffectsApp;
+use crate::unicorn;
+use crate::unicorn::display::DisplayGraphicsMessage;
 
 static CHANGE_APP: Signal<ThreadModeRawMutex, Apps> = Signal::new();
 
@@ -32,17 +33,21 @@ pub trait UnicornApp {
 
 pub struct AppController {
     active_app: Mutex<ThreadModeRawMutex, Apps>,
-    clock_app: &'static Clock,
+    clock_app: &'static ClockApp,
     effects_app: &'static EffectsApp,
     spawner: Spawner,
 }
 
 impl AppController {
-    pub fn new(clock: &'static Clock, effects: &'static EffectsApp, spawner: Spawner) -> Self {
+    pub fn new(
+        clock_app: &'static ClockApp,
+        effects_app: &'static EffectsApp,
+        spawner: Spawner,
+    ) -> Self {
         Self {
             active_app: Mutex::new(Apps::Clock),
-            clock_app: clock,
-            effects_app: effects,
+            clock_app,
+            effects_app,
             spawner,
         }
     }

@@ -6,6 +6,7 @@
 
 mod app;
 mod buttons;
+mod clock_app;
 mod config;
 mod effects_app;
 mod graphics;
@@ -15,45 +16,29 @@ mod unicorn;
 
 use core::fmt::Write;
 
+use cyw43_pio::PioSpi;
 use embassy_executor::Spawner;
-use embassy_net::Ipv4Address;
-use embassy_net::Ipv4Cidr;
-use embassy_net::Stack;
-use embassy_net::StackResources;
+use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_rp::bind_interrupts;
-use embassy_rp::gpio::Input;
-use embassy_rp::gpio::Level;
-use embassy_rp::gpio::Output;
-use embassy_rp::gpio::Pull;
-use embassy_rp::peripherals::DMA_CH1;
-use embassy_rp::peripherals::PIN_23;
-use embassy_rp::peripherals::PIN_25;
-use embassy_rp::peripherals::PIO1;
-use embassy_rp::pio::InterruptHandler;
-use embassy_rp::pio::Pio;
+use embassy_rp::gpio::{Input, Level, Output, Pull};
+use embassy_rp::peripherals::{DMA_CH1, PIN_23, PIN_25, PIO1};
+use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
-use embassy_time::Duration;
-
-use cyw43_pio::PioSpi;
-
-use defmt_rtt as _;
-use embassy_time::Timer;
-use galactic_unicorn_embassy::pins::UnicornButtonPins;
+use embassy_time::{Duration, Timer};
 use heapless::Vec;
-use mqtt::MqttReceiveMessage;
-use panic_halt as _;
 use static_cell::make_static;
 use static_cell::StaticCell;
 
+use defmt_rtt as _;
+use panic_halt as _;
+
+use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
 
-use crate::buttons::brightness_down_task;
-use crate::buttons::brightness_up_task;
-use crate::buttons::button_a_task;
-use crate::buttons::button_b_task;
+use crate::buttons::{brightness_down_task, brightness_up_task, button_a_task, button_b_task};
 use crate::config::*;
-use crate::mqtt::DisplayTopics;
+use crate::mqtt::{DisplayTopics, MqttReceiveMessage};
 use crate::unicorn::display;
 use crate::unicorn::display::DisplayTextMessage;
 
@@ -232,11 +217,12 @@ async fn main(spawner: Spawner) {
         ))
         .unwrap();
 
-    let clock = make_static!(time::Clock::new());
-    spawner.spawn(time::ntp::ntp_worker(stack, clock)).unwrap();
+    let time = make_static!(time::Time::new());
+    spawner.spawn(time::ntp::ntp_worker(stack, time)).unwrap();
 
+    let clock_app = make_static!(clock_app::ClockApp::new(time));
     let effects_app = make_static!(effects_app::EffectsApp::new());
 
-    let app_controller = make_static!(app::AppController::new(clock, effects_app, spawner));
+    let app_controller = make_static!(app::AppController::new(clock_app, effects_app, spawner));
     app_controller.run().await;
 }
