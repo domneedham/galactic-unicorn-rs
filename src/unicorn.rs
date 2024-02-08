@@ -15,6 +15,8 @@ pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins, spawner: Sp
 }
 
 pub mod display {
+    use core::sync::atomic::Ordering;
+
     use embassy_futures::select::{select, Either};
     use embassy_sync::{
         blocking_mutex::raw::ThreadModeRawMutex,
@@ -40,7 +42,7 @@ pub mod display {
     use crate::{
         buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
         graphics::colors::Rgb888Str,
-        mqtt::{DisplayTopics, MqttReceiveMessage},
+        mqtt::{DisplayTopics, MqttApp, MqttReceiveMessage},
     };
 
     use super::GALACTIC_UNICORN;
@@ -569,15 +571,21 @@ pub mod display {
     #[embassy_executor::task]
     pub async fn process_mqtt_messages_task(
         topics: DisplayTopics,
+        mqtt_app: &'static MqttApp,
         mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
     ) {
         loop {
             let message = subscriber.next_message_pure().await;
 
             if &message.topic == &topics.display_topic {
-                DisplayTextMessage::from_mqtt(&message.body, None, None)
-                    .send()
-                    .await;
+                let display_message = DisplayTextMessage::from_mqtt(&message.body, None, None);
+                if mqtt_app.is_active.load(Ordering::Relaxed) {
+                    display_message.send_and_show_now().await;
+                } else {
+                    display_message.send().await;
+                }
+
+                mqtt_app.set_last_message(message.body).await;
             } else if &message.topic == &topics.display_interrupt_topic {
                 DisplayTextMessage::from_mqtt(&message.body, None, None)
                     .send_and_show_now()

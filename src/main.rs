@@ -36,7 +36,9 @@ use panic_halt as _;
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
 
-use crate::buttons::{brightness_down_task, brightness_up_task, button_a_task, button_b_task};
+use crate::buttons::{
+    brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
+};
 use crate::config::*;
 use crate::mqtt::{DisplayTopics, MqttReceiveMessage};
 use crate::unicorn::display;
@@ -110,6 +112,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(button_a_task(button_pins.switch_a)).unwrap();
     spawner.spawn(button_b_task(button_pins.switch_b)).unwrap();
+    spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
 
     let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
     let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
@@ -171,6 +174,13 @@ async fn main(spawner: Spawner) {
         }
     }
 
+    let time = make_static!(time::Time::new());
+    spawner.spawn(time::ntp::ntp_worker(stack, time)).unwrap();
+
+    let clock_app = make_static!(clock_app::ClockApp::new(time));
+    let effects_app = make_static!(effects_app::EffectsApp::new());
+    let mqtt_app = make_static!(mqtt::MqttApp::new());
+
     static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1> =
         PubSubChannel::new();
 
@@ -213,16 +223,16 @@ async fn main(spawner: Spawner) {
     spawner
         .spawn(display::process_mqtt_messages_task(
             display_topics,
+            mqtt_app,
             MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
 
-    let time = make_static!(time::Time::new());
-    spawner.spawn(time::ntp::ntp_worker(stack, time)).unwrap();
-
-    let clock_app = make_static!(clock_app::ClockApp::new(time));
-    let effects_app = make_static!(effects_app::EffectsApp::new());
-
-    let app_controller = make_static!(app::AppController::new(clock_app, effects_app, spawner));
+    let app_controller = make_static!(app::AppController::new(
+        clock_app,
+        effects_app,
+        mqtt_app,
+        spawner
+    ));
     app_controller.run().await;
 }
