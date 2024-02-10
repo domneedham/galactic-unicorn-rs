@@ -106,7 +106,12 @@ pub mod display {
             }
         }
 
-        pub fn from_system(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
+        pub fn from_system(
+            text: &str,
+            color: Option<Rgb888>,
+            point: Option<Point>,
+            duration: Option<Duration>,
+        ) -> Self {
             let point = match point {
                 Some(x) => x,
                 None => Point::new(0, (HEIGHT / 2) as i32),
@@ -120,11 +125,16 @@ pub mod display {
                 }
             };
 
+            let duration = match duration {
+                Some(x) => x,
+                None => Duration::from_secs(3),
+            };
+
             Self {
                 text: heapless_text,
                 color,
                 point,
-                duration: Duration::from_secs(3),
+                duration: duration,
                 first_shown: None,
                 channel: DisplayChannels::SYSTEM,
             }

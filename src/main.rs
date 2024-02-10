@@ -92,7 +92,7 @@ async fn main(spawner: Spawner) {
     };
 
     unicorn::init(p.PIO0, p.DMA_CH0, display_pins, spawner).await;
-    DisplayTextMessage::from_system("Initialising...", None, None)
+    DisplayTextMessage::from_system("Init...", None, None, Some(Duration::from_secs(1)))
         .send()
         .await;
 
@@ -166,7 +166,7 @@ async fn main(spawner: Spawner) {
         match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
             Ok(_) => break,
             Err(_) => {
-                DisplayTextMessage::from_system("Joining wifi...", None, None)
+                DisplayTextMessage::from_system("Joining wifi...", None, None, None)
                     .send()
                     .await;
                 Timer::after(Duration::from_secs(2)).await;
@@ -174,7 +174,7 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    let time = make_static!(time::Time::new());
+    let time = make_static!(time::Time::new(p.RTC).await);
     spawner.spawn(time::ntp::ntp_worker(stack, time)).unwrap();
 
     let clock_app = make_static!(clock_app::ClockApp::new(time));
