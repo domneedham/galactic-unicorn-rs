@@ -488,6 +488,7 @@ source = "git+https://github.com/embassy-rs/embassy.git?rev=17851c7#17851c7ed0b7
 dependencies = [
  "atomic-polyfill",
  "cfg-if",
+ "chrono",
  "cortex-m",
  "cortex-m-rt",
  "critical-section 1.1.2",
