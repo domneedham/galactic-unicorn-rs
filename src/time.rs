@@ -1,35 +1,19 @@
-use chrono::{Duration, NaiveDateTime};
-use embassy_rp::{peripherals::RTC, rtc::Rtc};
+use chrono::{DateTime, Duration, Utc};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::Instant;
 
 pub struct Time {
-    rtc: Mutex<CriticalSectionRawMutex, Rtc<'static, RTC>>,
-    sys_start: Mutex<CriticalSectionRawMutex, NaiveDateTime>,
+    sys_start: Mutex<CriticalSectionRawMutex, DateTime<Utc>>,
 }
 
 impl Time {
-    pub async fn new(rtc_peripheral: RTC) -> Self {
-        let mut rtc = Rtc::new(rtc_peripheral);
-        if !rtc.is_running() {
-            rtc.set_datetime(NaiveDateTime::UNIX_EPOCH).unwrap();
-        }
-
-        let rtc_dt = rtc.now();
-        let dt = match rtc_dt {
-            Ok(val) => val,
-            Err(_) => NaiveDateTime::UNIX_EPOCH,
-        };
+    pub fn new() -> Self {
         Self {
-            rtc: Mutex::new(rtc),
-            sys_start: Mutex::new(dt),
+            sys_start: Mutex::new(DateTime::UNIX_EPOCH),
         }
     }
 
-    pub async fn set_time(&self, now: NaiveDateTime) {
-        let mut rtc = self.rtc.lock().await;
-        rtc.set_datetime(now).unwrap();
-
+    pub async fn set_time(&self, now: DateTime<Utc>) {
         let mut sys_start = self.sys_start.lock().await;
         let elapsed = Instant::now().as_millis();
         *sys_start = now
@@ -37,7 +21,7 @@ impl Time {
             .expect("sys_start greater as current_ts");
     }
 
-    pub async fn now(&self) -> NaiveDateTime {
+    pub async fn now(&self) -> DateTime<Utc> {
         let sys_start = self.sys_start.lock().await;
         let elapsed = Instant::now().as_millis();
         *sys_start + Duration::milliseconds(elapsed as i64)
@@ -45,7 +29,7 @@ impl Time {
 }
 
 pub mod ntp {
-    use chrono::NaiveDateTime;
+    use chrono::{DateTime, Utc};
     use embassy_net::{
         dns::DnsQueryType,
         udp::{PacketMetadata, UdpSocket},
@@ -157,7 +141,7 @@ pub mod ntp {
 
     #[derive(Copy, Clone)]
     struct TimestampGen {
-        now: NaiveDateTime,
+        now: DateTime<Utc>,
     }
 
     impl TimestampGen {
@@ -219,7 +203,7 @@ pub mod ntp {
         let ntp_context = NtpContext::new(TimestampGen::new(time).await);
 
         let ntp_result = get_time(sock_addr, ntp_socket, ntp_context).await?;
-        let now = NaiveDateTime::from_timestamp_opt(ntp_result.seconds as i64, 0)
+        let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0)
             .ok_or(SntpcError::BadNtpResponse)?;
         time.set_time(now).await;
 
