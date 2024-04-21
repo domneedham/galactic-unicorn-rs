@@ -3,8 +3,8 @@ use core::fmt::Write;
 use embassy_time::Timer;
 use embedded_graphics::{
     geometry::{Point, Size},
-    mono_font::{ascii::FONT_6X10, iso_8859_10::FONT_8X13, iso_8859_13::FONT_5X7, MonoTextStyle},
-    pixelcolor::{Rgb888, RgbColor, WebColors},
+    mono_font::{iso_8859_13::FONT_5X7, MonoTextStyle},
+    pixelcolor::{Rgb888, RgbColor},
     primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
@@ -16,6 +16,7 @@ use unicorn_graphics::UnicornGraphics;
 use crate::{
     app::UnicornApp,
     buttons::ButtonPress,
+    fonts::draw_number,
     time::Time,
     unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage},
 };
@@ -90,54 +91,17 @@ impl ClockApp {
         gr.set_pixel(Point { x, y: 8 }, Rgb888::new(100, 100, 100));
     }
 
-    fn draw_number(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, num: u32, start: u32) {
+    fn draw_numbers(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, num: u32, start: u32) {
         match num {
             0..=9 => {
-                draw(gr, 0, start);
-                draw(gr, num, start + 7);
+                draw_number(gr, 0, start);
+                draw_number(gr, num, start + 7);
             }
             10..=100 => {
-                draw(gr, num, start);
-                draw(gr, num, start + 7);
+                draw_number(gr, num, start);
+                draw_number(gr, num, start + 7);
             }
             _ => {}
-        }
-
-        fn get_point(x: u32, y: u32) -> Point {
-            Point {
-                x: x as i32,
-                y: y as i32,
-            }
-        }
-
-        fn draw(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, num: u32, start: u32) {
-            let end = start + 6;
-            for x in start..end {
-                for y in 0..11 {
-                    if x == start || x == start + 1 {
-                        match y {
-                            2..=3 => gr.set_pixel(get_point(x, y), Rgb888::RED),
-                            9..=11 => gr.set_pixel(get_point(x, y), Rgb888::RED),
-                            _ => {}
-                        }
-                    } else if x == start + 2 {
-                        match y {
-                            1..=11 => gr.set_pixel(get_point(x, y), Rgb888::RED),
-                            _ => {}
-                        }
-                    } else if x == start + 3 {
-                        match y {
-                            0..=11 => gr.set_pixel(get_point(x, y), Rgb888::RED),
-                            _ => {}
-                        }
-                    } else {
-                        match y {
-                            9..=11 => gr.set_pixel(get_point(x, y), Rgb888::RED),
-                            _ => {}
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -156,15 +120,15 @@ impl UnicornApp for ClockApp {
 
             for item in 0..7 {
                 if item == 0 {
-                    Self::draw_number(&mut gr, hour, item);
+                    Self::draw_numbers(&mut gr, hour, item);
                 } else if item == 1 {
                     Self::draw_colon(&mut gr, item + 12);
                 } else if item == 2 {
-                    Self::draw_number(&mut gr, minute, item * 7);
+                    Self::draw_numbers(&mut gr, minute, item * 7);
                 } else if item == 3 {
                     Self::draw_colon(&mut gr, item + 24);
                 } else if item == 4 {
-                    Self::draw_number(&mut gr, second, item * 7);
+                    Self::draw_numbers(&mut gr, second, item * 7);
                 }
             }
 

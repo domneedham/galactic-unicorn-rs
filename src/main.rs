@@ -9,6 +9,7 @@ mod buttons;
 mod clock_app;
 mod config;
 mod effects_app;
+mod fonts;
 mod graphics;
 mod mqtt;
 mod time;
