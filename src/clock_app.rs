@@ -16,7 +16,7 @@ use unicorn_graphics::UnicornGraphics;
 use crate::{
     app::UnicornApp,
     buttons::ButtonPress,
-    fonts::draw_number,
+    fonts,
     time::Time,
     unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage},
 };
@@ -92,17 +92,14 @@ impl ClockApp {
     }
 
     fn draw_numbers(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, num: u32, start: u32) {
-        match num {
-            0..=9 => {
-                draw_number(gr, 0, start);
-                draw_number(gr, num, start + 7);
-            }
-            10..=100 => {
-                draw_number(gr, num, start);
-                draw_number(gr, num, start + 7);
-            }
-            _ => {}
+        let mut num_str = heapless::String::<4>::new();
+        if num < 10 {
+            let _ = write!(num_str, "0{num}");
+        } else {
+            let _ = write!(num_str, "{num}");
         }
+
+        fonts::draw_str(gr, &num_str, start);
     }
 }
 
