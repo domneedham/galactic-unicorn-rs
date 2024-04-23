@@ -20,7 +20,8 @@ pub fn draw_char(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, character: char, start
         '3' => draw_three(gr, start),
         '4' => draw_four(gr, start),
         '5' => draw_five(gr, start),
-        _ => draw_five(gr, start),
+        '6' => draw_six(gr, start),
+        _ => draw_six(gr, start),
     }
 }
 
@@ -206,6 +207,39 @@ pub fn draw_five(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32) {
                 match y {
                     2 | 3 | 4 | 10 => {}
                     _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_PINK),
+                }
+            }
+        }
+    }
+}
+
+pub fn draw_six(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32) {
+    let end = start + 6;
+    for x in start..end {
+        for y in 0..11 {
+            if x == start {
+                match y {
+                    1..=9 => gr.set_pixel(get_point(x, y), Rgb888::CSS_AQUA),
+                    _ => {}
+                }
+            } else if x == start + 1 {
+                match y {
+                    _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_AQUA),
+                }
+            } else if x == start + 2 || x == start + 3 {
+                match y {
+                    0 | 1 | 4 | 5 | 9 | 10 => gr.set_pixel(get_point(x, y), Rgb888::CSS_AQUA),
+                    _ => {}
+                }
+            } else if x == start + 4 {
+                match y {
+                    3 => {}
+                    _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_AQUA),
+                }
+            } else {
+                match y {
+                    0 | 3 | 4 | 10 => {}
+                    _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_AQUA),
                 }
             }
         }
