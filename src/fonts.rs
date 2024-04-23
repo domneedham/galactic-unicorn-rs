@@ -19,7 +19,8 @@ pub fn draw_char(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, character: char, start
         '2' => draw_two(gr, start),
         '3' => draw_three(gr, start),
         '4' => draw_four(gr, start),
-        _ => draw_four(gr, start),
+        '5' => draw_five(gr, start),
+        _ => draw_five(gr, start),
     }
 }
 
@@ -171,6 +172,41 @@ pub fn draw_four(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32) {
                 }
             } else {
                 gr.set_pixel(get_point(x, y), Rgb888::GREEN);
+            }
+        }
+    }
+}
+
+pub fn draw_five(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32) {
+    let end = start + 6;
+    for x in start..end {
+        for y in 0..11 {
+            if x == start {
+                match y {
+                    0..=4 => gr.set_pixel(get_point(x, y), Rgb888::CSS_PINK),
+                    7..=9 => gr.set_pixel(get_point(x, y), Rgb888::CSS_PINK),
+                    _ => {}
+                }
+            } else if x == start + 1 {
+                match y {
+                    6 => {}
+                    _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_PINK),
+                }
+            } else if x == start + 2 || x == start + 3 {
+                match y {
+                    0 | 1 | 4 | 5 | 9 | 10 => gr.set_pixel(get_point(x, y), Rgb888::CSS_PINK),
+                    _ => {}
+                }
+            } else if x == start + 4 {
+                match y {
+                    2 | 3 => {}
+                    _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_PINK),
+                }
+            } else {
+                match y {
+                    2 | 3 | 4 | 10 => {}
+                    _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_PINK),
+                }
             }
         }
     }
