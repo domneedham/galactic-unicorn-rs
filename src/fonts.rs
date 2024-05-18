@@ -22,7 +22,8 @@ pub fn draw_char(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, character: char, start
         '5' => draw_five(gr, start),
         '6' => draw_six(gr, start),
         '7' => draw_seven(gr, start),
-        _ => draw_seven(gr, start),
+        '8' => draw_eight(gr, start),
+        _ => draw_eight(gr, start),
     }
 }
 
@@ -268,6 +269,27 @@ pub fn draw_seven(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32) {
                 match y {
                     0..=3 => {}
                     _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_DARK_KHAKI),
+                }
+            }
+        }
+    }
+}
+
+pub fn draw_eight(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32) {
+    let end = start + 6;
+    for x in start..end {
+        for y in 0..11 {
+            if x == start || x == start + 5 {
+                match y {
+                    0 | 5 | 10 => {}
+                    _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_GOLD),
+                }
+            } else if x == start + 1 || x == start + 4 {
+                gr.set_pixel(get_point(x, y), Rgb888::CSS_GOLD);
+            } else if x == start + 2 || x == start + 3 {
+                match y {
+                    2 | 3 | 7 | 8 => {}
+                    _ => gr.set_pixel(get_point(x, y), Rgb888::CSS_GOLD),
                 }
             }
         }
