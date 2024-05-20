@@ -4,7 +4,7 @@ use embassy_time::Timer;
 use embedded_graphics::{
     geometry::{Point, Size},
     mono_font::{iso_8859_13::FONT_5X7, MonoTextStyle},
-    pixelcolor::{Rgb888, RgbColor},
+    pixelcolor::{Rgb888, RgbColor, WebColors},
     primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
@@ -99,7 +99,7 @@ impl ClockApp {
             let _ = write!(num_str, "{num}");
         }
 
-        fonts::draw_str(gr, &num_str, start);
+        fonts::draw_str(gr, &num_str, start, Rgb888::CSS_PURPLE);
     }
 }
 
