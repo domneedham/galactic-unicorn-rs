@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-galactic-unicorn-embassy = { version = "0.2.3", git = "https://github.com/domneedham/pimoroni-unicorn-rs", branch = "auto_draw" }
-unicorn-graphics = { version = "0.1.4", git = "https://github.com/domneedham/pimoroni-unicorn-rs", branch = "auto_draw" }
+galactic-unicorn-embassy = { version = "0.2.3", git = "https://github.com/domneedham/pimoroni-unicorn-rs", branch = "auto_draw_display" }
+unicorn-graphics = { version = "0.1.4", git = "https://github.com/domneedham/pimoroni-unicorn-rs", branch = "auto_draw_display" }
 embedded-graphics = "0.7.1"
 embedded-graphics-core = "0.3.3"
 
