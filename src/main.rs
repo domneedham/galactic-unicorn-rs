@@ -92,7 +92,7 @@ async fn main(spawner: Spawner) {
         sleep: Input::new(p.PIN_27, Pull::Up),
     };
 
-    unicorn::init(p.PIO0, p.DMA_CH0, display_pins, spawner).await;
+    unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
     DisplayTextMessage::from_system("Initialising...", None, None)
         .send()
         .await;

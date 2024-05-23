@@ -99,7 +99,7 @@ impl ClockApp {
             let _ = write!(num_str, "{num}");
         }
 
-        fonts::draw_str(gr, &num_str, start, Rgb888::CSS_PURPLE);
+        fonts::draw_str(gr, &num_str, start, Rgb888::RED);
     }
 }
 

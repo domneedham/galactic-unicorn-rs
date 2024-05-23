@@ -1,4 +1,3 @@
-use embassy_executor::Spawner;
 use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use galactic_unicorn_embassy::{pins::UnicornDisplayPins, GalacticUnicorn};
@@ -8,8 +7,8 @@ use crate::mqtt::MqttMessage;
 type GalacticUnicornType = Mutex<ThreadModeRawMutex, Option<GalacticUnicorn>>;
 static GALACTIC_UNICORN: GalacticUnicornType = Mutex::new(None);
 
-pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins, spawner: Spawner) {
-    let gu = GalacticUnicorn::new(pio, pins, dma, spawner);
+pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
+    let gu = GalacticUnicorn::new(pio, pins, dma);
     GALACTIC_UNICORN.lock().await.replace(gu);
     MqttMessage::debug("Initialised display").send().await;
 }
