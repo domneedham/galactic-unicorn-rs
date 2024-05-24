@@ -366,7 +366,7 @@ pub mod display {
     ) {
         message.set_first_shown();
 
-        graphics.pixels = message.pixels;
+        graphics.set_pixels(message.pixels);
         set_graphics(graphics).await;
 
         loop {

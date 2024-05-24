@@ -118,8 +118,11 @@ async fn display_task(app_controller: &'static AppController) {
 
         unicorn::display::STOP_CURRENT_DISPLAY.signal(true);
         // when switching between apps we want to clear the old queue and blank the display ..
-        DisplayGraphicsMessage::from_app(blank_graphics.pixels, Some(Duration::from_millis(10)))
-            .send_and_replace_queue()
-            .await;
+        DisplayGraphicsMessage::from_app(
+            blank_graphics.get_pixels(),
+            Some(Duration::from_millis(10)),
+        )
+        .send_and_replace_queue()
+        .await;
     }
 }

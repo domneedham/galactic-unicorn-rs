@@ -4,7 +4,7 @@ use embassy_time::Timer;
 use embedded_graphics::{
     geometry::{Point, Size},
     mono_font::{iso_8859_13::FONT_5X7, MonoTextStyle},
-    pixelcolor::{Rgb888, RgbColor, WebColors},
+    pixelcolor::{Rgb888, RgbColor},
     primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
@@ -129,14 +129,6 @@ impl UnicornApp for ClockApp {
                 }
             }
 
-            // Text::new(
-            //     &time,
-            //     Point { x: 0, y: 8 },
-            //     MonoTextStyle::new(&FONT_8X13, Rgb888::CSS_PURPLE),
-            // )
-            // .draw(&mut gr)
-            // .unwrap();
-
             let white_style = PrimitiveStyleBuilder::new()
                 .fill_color(Rgb888::new(100, 100, 100))
                 .build();
@@ -172,9 +164,12 @@ impl UnicornApp for ClockApp {
             .draw(&mut gr)
             .unwrap();
 
-            DisplayGraphicsMessage::from_app(gr.pixels, Some(embassy_time::Duration::from_secs(1)))
-                .send_and_replace_queue()
-                .await;
+            DisplayGraphicsMessage::from_app(
+                gr.get_pixels(),
+                Some(embassy_time::Duration::from_secs(1)),
+            )
+            .send_and_replace_queue()
+            .await;
 
             // DisplayTextMessage::from_app(
             //     &time,

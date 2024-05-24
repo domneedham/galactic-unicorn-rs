@@ -1,7 +1,4 @@
-use embedded_graphics::{
-    geometry::Point,
-    pixelcolor::{Rgb888, RgbColor, WebColors},
-};
+use embedded_graphics::{geometry::Point, pixelcolor::Rgb888};
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use unicorn_graphics::UnicornGraphics;
 
