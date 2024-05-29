@@ -4,7 +4,7 @@ use embassy_time::Timer;
 use embedded_graphics::{
     geometry::{Point, Size},
     mono_font::{iso_8859_13::FONT_5X7, MonoTextStyle},
-    pixelcolor::{Rgb888, RgbColor, WebColors},
+    pixelcolor::{Rgb888, RgbColor},
     primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
@@ -19,7 +19,10 @@ use crate::{
     buttons::ButtonPress,
     fonts,
     time::Time,
-    unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage},
+    unicorn::{
+        self,
+        display::{DisplayGraphicsMessage, DisplayTextMessage},
+    },
 };
 
 pub struct ClockApp {
@@ -80,7 +83,7 @@ impl ClockApp {
         gr.set_pixel(Point { x, y: 8 }, Rgb888::new(100, 100, 100));
     }
 
-    fn draw_numbers(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, num: u32, start: u32) {
+    fn draw_numbers(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, num: u32, start: u32, color: Rgb888) {
         let mut num_str = heapless::String::<4>::new();
         if num < 10 {
             let _ = write!(num_str, "0{num}");
@@ -88,7 +91,7 @@ impl ClockApp {
             let _ = write!(num_str, "{num}");
         }
 
-        fonts::draw_str(gr, &num_str, start, Rgb888::CSS_PINK);
+        fonts::draw_str(gr, &num_str, start, color);
     }
 }
 
@@ -112,18 +115,19 @@ impl UnicornApp for ClockApp {
             let second = dt.time().second();
 
             gr.clear_all();
+            let color = *unicorn::display::CURRENT_COLOR.lock().await;
 
             for item in 0..7 {
                 if item == 0 {
-                    Self::draw_numbers(&mut gr, hour, item);
+                    Self::draw_numbers(&mut gr, hour, item, color);
                 } else if item == 1 {
                     Self::draw_colon(&mut gr, item + 12);
                 } else if item == 2 {
-                    Self::draw_numbers(&mut gr, minute, item * 7);
+                    Self::draw_numbers(&mut gr, minute, item * 7, color);
                 } else if item == 3 {
                     Self::draw_colon(&mut gr, item + 24);
                 } else if item == 4 {
-                    Self::draw_numbers(&mut gr, second, item * 7);
+                    Self::draw_numbers(&mut gr, second, item * 7, color);
                 }
             }
 
@@ -158,38 +162,46 @@ impl UnicornApp for ClockApp {
             .draw(&mut gr)
             .unwrap();
 
-            for _ in 0..20 {
-                for x in 0..TEXT_WIDTH as u8 {
-                    for y in 0..HEIGHT as u8 {
-                        let point = Point::new(x as i32, y as i32);
-                        if gr.is_match(point, Rgb888::BLACK)
-                            || gr.is_match(point, Rgb888::new(100, 100, 100))
-                        {
-                            continue;
-                        }
+            // for _ in 0..20 {
+            //     for x in 0..TEXT_WIDTH as u8 {
+            //         for y in 0..HEIGHT as u8 {
+            //             let point = Point::new(x as i32, y as i32);
+            //             if gr.is_match(point, Rgb888::BLACK)
+            //                 || gr.is_match(point, Rgb888::new(100, 100, 100))
+            //             {
+            //                 continue;
+            //             }
 
-                        let mut index = ((x as f32 + (hue_offset * TEXT_WIDTH as f32))
-                            % TEXT_WIDTH as f32)
-                            .round() as usize;
+            //             let mut index = ((x as f32 + (hue_offset * TEXT_WIDTH as f32))
+            //                 % TEXT_WIDTH as f32)
+            //                 .round() as usize;
 
-                        if index >= 41 {
-                            index = 0;
-                        }
-                        let value = colors[index];
-                        gr.set_pixel(point, value);
-                    }
-                }
+            //             if index >= 41 {
+            //                 index = 0;
+            //             }
+            //             let value = colors[index];
+            //             gr.set_pixel(point, value);
+            //         }
+            //     }
 
-                hue_offset += 0.01;
+            //     hue_offset += 0.01;
 
-                DisplayGraphicsMessage::from_app(
-                    gr.get_pixels(),
-                    Some(embassy_time::Duration::from_millis(50)),
-                )
-                .send_and_replace_queue()
-                .await;
-                Timer::after_millis(50).await;
-            }
+            //     DisplayGraphicsMessage::from_app(
+            //         gr.get_pixels(),
+            //         Some(embassy_time::Duration::from_millis(50)),
+            //     )
+            //     .send_and_replace_queue()
+            //     .await;
+            //     Timer::after_millis(50).await;
+            // }
+
+            DisplayGraphicsMessage::from_app(
+                gr.get_pixels(),
+                Some(embassy_time::Duration::from_millis(1000)),
+            )
+            .send_and_replace_queue()
+            .await;
+            Timer::after_millis(1000).await;
         }
     }
 

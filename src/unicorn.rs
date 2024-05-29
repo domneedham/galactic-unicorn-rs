@@ -48,7 +48,7 @@ pub mod display {
 
     static CHANGE_COLOR_CHANNEL: PubSubChannel<ThreadModeRawMutex, Rgb888, 1, 2, 1> =
         PubSubChannel::new();
-    static CURRENT_COLOR: Mutex<ThreadModeRawMutex, Rgb888> = Mutex::new(Rgb888::CSS_PURPLE);
+    pub static CURRENT_COLOR: Mutex<ThreadModeRawMutex, Rgb888> = Mutex::new(Rgb888::CSS_PURPLE);
     static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
         Mutex::new(None);
 
@@ -324,14 +324,16 @@ pub mod display {
     }
 
     pub async fn set_color(color: Rgb888) {
+        let old_color = *CURRENT_COLOR.lock().await;
+        *CURRENT_COLOR.lock().await = color;
+
         CURRENT_GRAPHICS
             .lock()
             .await
             .as_mut()
             .unwrap()
-            .replace_color_with_new(*CURRENT_COLOR.lock().await, color);
+            .replace_color_with_new(old_color, color);
 
-        *CURRENT_COLOR.lock().await = color;
         CHANGE_COLOR_CHANNEL
             .publisher()
             .unwrap()
