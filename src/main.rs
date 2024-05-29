@@ -168,7 +168,7 @@ async fn main(spawner: Spawner) {
             Ok(_) => break,
             Err(_) => {
                 DisplayTextMessage::from_system("Joining wifi...", None, None)
-                    .send()
+                    .send_and_replace_queue()
                     .await;
                 Timer::after(Duration::from_secs(2)).await;
             }

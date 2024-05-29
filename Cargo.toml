@@ -59,6 +59,7 @@ sntpc = { version = "0.3.4", features = ["async"], default-features = false }
 no-std-net = "0.6"
 chrono = { version = "0.4", default-features = false }
 chrono-tz = { version = "0.9.0", default-features = false }
+micromath = "2.1.0"
 
 # cargo build/run
 [profile.dev]

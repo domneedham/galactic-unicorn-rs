@@ -4,13 +4,14 @@ use embassy_time::Timer;
 use embedded_graphics::{
     geometry::{Point, Size},
     mono_font::{iso_8859_13::FONT_5X7, MonoTextStyle},
-    pixelcolor::{Rgb888, RgbColor},
+    pixelcolor::{Rgb888, RgbColor, WebColors},
     primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
 use embedded_graphics_core::Drawable;
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
-use heapless::String;
+use heapless::{String, Vec};
+use micromath::F32Ext as _; // needed for rem_euclid, floor, abs and round
 use unicorn_graphics::UnicornGraphics;
 
 use crate::{
@@ -28,18 +29,6 @@ pub struct ClockApp {
 impl ClockApp {
     pub fn new(time: &'static Time) -> Self {
         Self { time }
-    }
-
-    pub async fn get_time_str(&self) -> String<10> {
-        let dt = self.time.now().await;
-        let hours = dt.hour();
-        let minutes = dt.minute();
-        let seconds = dt.second();
-
-        let mut result = String::<10>::new();
-        let time_delimiter = if seconds % 2 == 0 { ":" } else { " " };
-        write!(result, "{hours:02}{time_delimiter}{minutes:02}").unwrap();
-        result
     }
 
     pub async fn get_date_str(&self) -> String<12> {
@@ -99,13 +88,22 @@ impl ClockApp {
             let _ = write!(num_str, "{num}");
         }
 
-        fonts::draw_str(gr, &num_str, start, Rgb888::RED);
+        fonts::draw_str(gr, &num_str, start, Rgb888::CSS_PINK);
     }
 }
 
 impl UnicornApp for ClockApp {
     async fn display(&self) {
+        let mut hue_offset: f32 = 0.0;
+        let colors = generate_rainbow_colors();
+
         let mut gr = UnicornGraphics::<WIDTH, HEIGHT>::new();
+
+        let white_style = PrimitiveStyleBuilder::new()
+            .fill_color(Rgb888::new(100, 100, 100))
+            .build();
+        let red_style = PrimitiveStyleBuilder::new().fill_color(Rgb888::RED).build();
+
         loop {
             // let time = self.get_time_str().await;
             let dt = self.time.now().await;
@@ -129,9 +127,6 @@ impl UnicornApp for ClockApp {
                 }
             }
 
-            let white_style = PrimitiveStyleBuilder::new()
-                .fill_color(Rgb888::new(100, 100, 100))
-                .build();
             Rectangle::new(
                 Point { x: 41, y: 3 },
                 Size {
@@ -143,7 +138,6 @@ impl UnicornApp for ClockApp {
             .draw(&mut gr)
             .unwrap();
 
-            let red_style = PrimitiveStyleBuilder::new().fill_color(Rgb888::RED).build();
             Rectangle::new(
                 Point { x: 41, y: 0 },
                 Size {
@@ -164,23 +158,38 @@ impl UnicornApp for ClockApp {
             .draw(&mut gr)
             .unwrap();
 
-            DisplayGraphicsMessage::from_app(
-                gr.get_pixels(),
-                Some(embassy_time::Duration::from_secs(1)),
-            )
-            .send_and_replace_queue()
-            .await;
+            for _ in 0..20 {
+                for x in 0..TEXT_WIDTH as u8 {
+                    for y in 0..HEIGHT as u8 {
+                        let point = Point::new(x as i32, y as i32);
+                        if gr.is_match(point, Rgb888::BLACK)
+                            || gr.is_match(point, Rgb888::new(100, 100, 100))
+                        {
+                            continue;
+                        }
 
-            // DisplayTextMessage::from_app(
-            //     &time,
-            //     None,
-            //     Some(Point { x: 3, y: 2 }),
-            //     Some(embassy_time::Duration::from_secs(1)),
-            // )
-            // .send_and_replace_queue()
-            // .await;
+                        let mut index = ((x as f32 + (hue_offset * TEXT_WIDTH as f32))
+                            % TEXT_WIDTH as f32)
+                            .round() as usize;
 
-            Timer::after_secs(1).await;
+                        if index >= 41 {
+                            index = 0;
+                        }
+                        let value = colors[index];
+                        gr.set_pixel(point, value);
+                    }
+                }
+
+                hue_offset += 0.01;
+
+                DisplayGraphicsMessage::from_app(
+                    gr.get_pixels(),
+                    Some(embassy_time::Duration::from_millis(50)),
+                )
+                .send_and_replace_queue()
+                .await;
+                Timer::after_millis(50).await;
+            }
         }
     }
 
@@ -205,4 +214,42 @@ impl UnicornApp for ClockApp {
             ButtonPress::Double => {}
         }
     }
+}
+
+fn from_hsv(h: f32, s: f32, v: f32) -> Rgb888 {
+    let i = (h * 6.0).floor();
+    let f = h * 6.0 - i;
+    let v = v * 255.0;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - f * s);
+    let t = v * (1.0 - (1.0 - f) * s);
+
+    let i = i.round() % 6.0;
+    if i == 0.0 {
+        return Rgb888::new(v.round() as u8, t.round() as u8, p.round() as u8);
+    } else if i == 1.0 {
+        return Rgb888::new(q.round() as u8, v.round() as u8, p.round() as u8);
+    } else if i == 2.0 {
+        return Rgb888::new(p.round() as u8, v.round() as u8, t.round() as u8);
+    } else if i == 3.0 {
+        return Rgb888::new(p.round() as u8, q.round() as u8, v.round() as u8);
+    } else if i == 4.0 {
+        return Rgb888::new(t.round() as u8, p.round() as u8, v.round() as u8);
+    } else if i == 5.0 {
+        return Rgb888::new(v.round() as u8, p.round() as u8, q.round() as u8);
+    } else {
+        return Rgb888::new(0, 0, 0);
+    }
+}
+
+const TEXT_WIDTH: usize = 41;
+fn generate_rainbow_colors() -> Vec<Rgb888, TEXT_WIDTH> {
+    let mut colors = Vec::<Rgb888, TEXT_WIDTH>::new();
+
+    for x in 0..TEXT_WIDTH {
+        let color = from_hsv(x as f32 / TEXT_WIDTH as f32, 1.0, 1.0);
+        colors.push(color).unwrap();
+    }
+
+    colors
 }
