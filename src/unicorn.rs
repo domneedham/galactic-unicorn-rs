@@ -224,7 +224,7 @@ pub mod display {
 
     pub struct DisplayGraphicsMessage {
         pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
-        duration: Duration,
+        duration: Option<Duration>,
         first_shown: Option<Instant>,
         channel: DisplayChannels,
     }
@@ -234,11 +234,6 @@ pub mod display {
             pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
             duration: Option<Duration>,
         ) -> Self {
-            let duration = match duration {
-                Some(x) => x,
-                None => Duration::from_secs(3),
-            };
-
             Self {
                 pixels,
                 duration,
@@ -256,11 +251,15 @@ pub mod display {
         }
 
         pub fn has_min_duration_passed(&self) -> bool {
+            if self.duration.is_none() {
+                return true;
+            }
+
             if self.first_shown.is_none() {
                 return false;
             }
 
-            self.first_shown.unwrap().elapsed() > self.duration
+            self.first_shown.unwrap().elapsed() > self.duration.unwrap()
         }
     }
 
@@ -298,6 +297,7 @@ pub mod display {
                     self.send().await;
                 }
                 DisplayChannels::APP => {
+                    // clear channel
                     while APP_DISPLAY_CHANNEL.try_receive().is_ok() {}
                     self.send().await;
                 }
@@ -338,8 +338,6 @@ pub mod display {
             .publisher()
             .unwrap()
             .publish_immediate(color);
-
-        redraw_graphics().await;
     }
 
     async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
@@ -372,11 +370,11 @@ pub mod display {
         set_graphics(graphics).await;
 
         loop {
-            Timer::after_millis(10).await;
-
             if message.has_min_duration_passed() || STOP_CURRENT_DISPLAY.signaled() {
                 STOP_CURRENT_DISPLAY.reset();
                 break;
+            } else {
+                Timer::after_millis(1).await;
             }
         }
     }
@@ -430,8 +428,8 @@ pub mod display {
                 text.draw(graphics).unwrap();
                 set_graphics(graphics).await;
 
-                x += 0.15;
-                Timer::after_millis(10).await;
+                x += 0.05;
+                Timer::after_millis(1).await;
             }
         } else {
             graphics.fill(Rgb888::new(5, 5, 5));

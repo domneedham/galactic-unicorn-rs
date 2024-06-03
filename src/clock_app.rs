@@ -71,7 +71,11 @@ impl ClockApp {
         let day = dt.day();
 
         let mut result = String::<2>::new();
-        write!(result, "{day}").unwrap();
+        if day < 10 {
+            let _ = write!(result, "0{day}");
+        } else {
+            let _ = write!(result, "{day}");
+        }
         result
     }
 
@@ -108,28 +112,20 @@ impl UnicornApp for ClockApp {
         let red_style = PrimitiveStyleBuilder::new().fill_color(Rgb888::RED).build();
 
         loop {
-            // let time = self.get_time_str().await;
             let dt = self.time.now().await;
             let hour = dt.time().hour();
             let minute = dt.time().minute();
             let second = dt.time().second();
 
             gr.clear_all();
+
             let color = *unicorn::display::CURRENT_COLOR.lock().await;
 
-            for item in 0..7 {
-                if item == 0 {
-                    Self::draw_numbers(&mut gr, hour, item, color);
-                } else if item == 1 {
-                    Self::draw_colon(&mut gr, item + 12);
-                } else if item == 2 {
-                    Self::draw_numbers(&mut gr, minute, item * 7, color);
-                } else if item == 3 {
-                    Self::draw_colon(&mut gr, item + 24);
-                } else if item == 4 {
-                    Self::draw_numbers(&mut gr, second, item * 7, color);
-                }
-            }
+            Self::draw_numbers(&mut gr, hour, 0, color);
+            Self::draw_colon(&mut gr, 13);
+            Self::draw_numbers(&mut gr, minute, 14, color);
+            Self::draw_colon(&mut gr, 27);
+            Self::draw_numbers(&mut gr, second, 28, color);
 
             Rectangle::new(
                 Point { x: 41, y: 3 },
@@ -186,22 +182,18 @@ impl UnicornApp for ClockApp {
 
             //     hue_offset += 0.01;
 
-            //     DisplayGraphicsMessage::from_app(
-            //         gr.get_pixels(),
-            //         Some(embassy_time::Duration::from_millis(50)),
-            //     )
-            //     .send_and_replace_queue()
-            //     .await;
-            //     Timer::after_millis(50).await;
+            //     let duration = embassy_time::Duration::from_millis(50);
+            //     DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
+            //         .send_and_replace_queue()
+            //         .await;
+            //     Timer::after(duration).await;
             // }
 
-            DisplayGraphicsMessage::from_app(
-                gr.get_pixels(),
-                Some(embassy_time::Duration::from_millis(1000)),
-            )
-            .send_and_replace_queue()
-            .await;
-            Timer::after_millis(1000).await;
+            let duration = embassy_time::Duration::from_millis(1000);
+            DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
+                .send_and_replace_queue()
+                .await;
+            Timer::after(duration).await;
         }
     }
 
