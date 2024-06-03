@@ -20,6 +20,7 @@ pub struct DisplayTopics {
     pub display_interrupt_topic: String<64>,
     pub brightness_topic: String<64>,
     pub color_topic: String<64>,
+    pub clock_app_topic: String<64>,
 }
 
 pub struct MqttMessage<'a> {
@@ -282,11 +283,22 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         }
 
+        match client
+            .subscribe_to_topic(&display_topics.clock_app_topic)
+            .await
+        {
+            Ok(_) => {
+                MqttMessage::debug("Subscribed to clock app topic")
+                    .send()
+                    .await
+            }
+            Err(code) => send_reason_code(code).await,
+        }
+
         loop {
             match select(client.receive_message(), Timer::after_secs(5)).await {
                 Either::First(received_message) => match received_message {
                     Ok(message) => {
-                        MqttMessage::debug("Received mqtt message").send().await;
                         let message = MqttReceiveMessage::new(message.0, message.1);
                         publisher.publish(message).await;
                     }

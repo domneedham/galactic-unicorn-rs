@@ -1,5 +1,6 @@
 use chrono::{Datelike, Timelike, Weekday};
 use core::fmt::Write;
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::Timer;
 use embedded_graphics::{
     geometry::{Point, Size},
@@ -25,13 +26,36 @@ use crate::{
     },
 };
 
+#[derive(Clone, Copy)]
+pub enum ClockEffect {
+    Rainbow,
+    None,
+}
+
+impl ClockEffect {
+    pub fn from_mqtt(message: &str) -> ClockEffect {
+        match message {
+            "rainbow" => ClockEffect::Rainbow,
+            _ => ClockEffect::None,
+        }
+    }
+}
+
 pub struct ClockApp {
     time: &'static Time,
+    effect: Mutex<NoopRawMutex, ClockEffect>,
 }
 
 impl ClockApp {
     pub fn new(time: &'static Time) -> Self {
-        Self { time }
+        Self {
+            time,
+            effect: Mutex::new(ClockEffect::None),
+        }
+    }
+
+    pub async fn set_effect(&self, effect: ClockEffect) {
+        *self.effect.lock().await = effect;
     }
 
     pub async fn get_date_str(&self) -> String<12> {
@@ -112,6 +136,8 @@ impl UnicornApp for ClockApp {
         let red_style = PrimitiveStyleBuilder::new().fill_color(Rgb888::RED).build();
 
         loop {
+            let effect = *self.effect.lock().await;
+
             let dt = self.time.now().await;
             let hour = dt.time().hour();
             let minute = dt.time().minute();
@@ -158,42 +184,48 @@ impl UnicornApp for ClockApp {
             .draw(&mut gr)
             .unwrap();
 
-            // for _ in 0..20 {
-            //     for x in 0..TEXT_WIDTH as u8 {
-            //         for y in 0..HEIGHT as u8 {
-            //             let point = Point::new(x as i32, y as i32);
-            //             if gr.is_match(point, Rgb888::BLACK)
-            //                 || gr.is_match(point, Rgb888::new(100, 100, 100))
-            //             {
-            //                 continue;
-            //             }
+            match effect {
+                ClockEffect::Rainbow => {
+                    for _ in 0..20 {
+                        for x in 0..TEXT_WIDTH as u8 {
+                            for y in 0..HEIGHT as u8 {
+                                let point = Point::new(x as i32, y as i32);
+                                if gr.is_match(point, Rgb888::BLACK)
+                                    || gr.is_match(point, Rgb888::new(100, 100, 100))
+                                {
+                                    continue;
+                                }
 
-            //             let mut index = ((x as f32 + (hue_offset * TEXT_WIDTH as f32))
-            //                 % TEXT_WIDTH as f32)
-            //                 .round() as usize;
+                                let mut index = ((x as f32 + (hue_offset * TEXT_WIDTH as f32))
+                                    % TEXT_WIDTH as f32)
+                                    .round()
+                                    as usize;
 
-            //             if index >= 41 {
-            //                 index = 0;
-            //             }
-            //             let value = colors[index];
-            //             gr.set_pixel(point, value);
-            //         }
-            //     }
+                                if index >= 41 {
+                                    index = 0;
+                                }
+                                let value = colors[index];
+                                gr.set_pixel(point, value);
+                            }
+                        }
 
-            //     hue_offset += 0.01;
+                        hue_offset += 0.01;
 
-            //     let duration = embassy_time::Duration::from_millis(50);
-            //     DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
-            //         .send_and_replace_queue()
-            //         .await;
-            //     Timer::after(duration).await;
-            // }
-
-            let duration = embassy_time::Duration::from_millis(1000);
-            DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
-                .send_and_replace_queue()
-                .await;
-            Timer::after(duration).await;
+                        let duration = embassy_time::Duration::from_millis(50);
+                        DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
+                            .send_and_replace_queue()
+                            .await;
+                        Timer::after(duration).await;
+                    }
+                }
+                ClockEffect::None => {
+                    let duration = embassy_time::Duration::from_millis(250);
+                    DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
+                        .send_and_replace_queue()
+                        .await;
+                    Timer::after(duration).await;
+                }
+            }
         }
     }
 

@@ -206,11 +206,16 @@ async fn main(spawner: Spawner) {
     _ = write!(color_topic, "{BASE_MQTT_TOPIC}");
     _ = write!(color_topic, "display/color");
 
+    let mut clock_app_topic = heapless::String::<64>::new();
+    _ = write!(clock_app_topic, "{BASE_MQTT_TOPIC}");
+    _ = write!(clock_app_topic, "clock_app");
+
     let display_topics = DisplayTopics {
         display_topic,
         display_interrupt_topic,
         brightness_topic,
         color_topic,
+        clock_app_topic,
     };
 
     spawner
@@ -225,6 +230,7 @@ async fn main(spawner: Spawner) {
         .spawn(display::process_mqtt_messages_task(
             display_topics,
             mqtt_app,
+            clock_app,
             MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
