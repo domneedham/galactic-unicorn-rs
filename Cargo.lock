@@ -897,8 +897,8 @@ dependencies = [
 
 [[package]]
 name = "galactic-unicorn-embassy"
-version = "0.3.2"
-source = "git+https://github.com/domneedham/pimoroni-unicorn-rs?branch=auto_draw_display#03d369de478fb4d8d41f991184e148103838d514"
+version = "0.4.0"
+source = "git+https://github.com/domneedham/pimoroni-unicorn-rs#ee9c805946c0f4785f6831b49b9ce7c203433fa6"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "galactic-unicorn-rs"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1832,7 +1832,7 @@ checksum = "f962df74c8c05a667b5ee8bcf162993134c104e96440b663c8daa176dc772d8c"
 [[package]]
 name = "unicorn-graphics"
 version = "0.2.1"
-source = "git+https://github.com/domneedham/pimoroni-unicorn-rs?branch=auto_draw_display#03d369de478fb4d8d41f991184e148103838d514"
+source = "git+https://github.com/domneedham/pimoroni-unicorn-rs#ee9c805946c0f4785f6831b49b9ce7c203433fa6"
 dependencies = [
  "embedded-graphics",
  "embedded-graphics-core",

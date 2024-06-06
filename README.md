@@ -2,5 +2,5 @@
 
 ## Planned Features
 
-- [ ] Generic clock
+- [x] Generic clock
 - [ ] MQTT enabled
