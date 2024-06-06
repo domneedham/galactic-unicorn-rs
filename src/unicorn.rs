@@ -40,7 +40,6 @@ pub mod display {
 
     use crate::{
         buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
-        clock_app::{ClockApp, ClockEffect},
         graphics::colors::Rgb888Str,
         mqtt::{DisplayTopics, MqttApp, MqttReceiveMessage},
     };
@@ -572,7 +571,6 @@ pub mod display {
     pub async fn process_mqtt_messages_task(
         topics: DisplayTopics,
         mqtt_app: &'static MqttApp,
-        clock_app: &'static ClockApp,
         mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
     ) {
         loop {
@@ -604,9 +602,6 @@ pub mod display {
                     }
                     None => {}
                 };
-            } else if &message.topic == &topics.clock_app_topic {
-                let effect = ClockEffect::from_mqtt(&message.body);
-                clock_app.set_effect(effect).await;
             }
         }
     }

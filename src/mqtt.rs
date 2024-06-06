@@ -20,6 +20,10 @@ pub struct DisplayTopics {
     pub display_interrupt_topic: String<64>,
     pub brightness_topic: String<64>,
     pub color_topic: String<64>,
+}
+
+#[derive(Clone)]
+pub struct AppTopics {
     pub clock_app_topic: String<64>,
 }
 
@@ -124,6 +128,8 @@ impl UnicornApp for MqttApp {
     }
 
     async fn button_press(&self, _: ButtonPress) {}
+
+    async fn process_mqtt_message(&self, _: MqttReceiveMessage) {}
 }
 
 pub mod clients {
@@ -140,7 +146,7 @@ pub mod clients {
         utils::rng_generator::CountingRng,
     };
 
-    use super::{DisplayTopics, MqttMessage, MqttReceiveMessage, SEND_CHANNEL};
+    use super::{AppTopics, DisplayTopics, MqttMessage, MqttReceiveMessage, SEND_CHANNEL};
     use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
 
     #[embassy_executor::task]
@@ -200,7 +206,9 @@ pub mod clients {
     pub async fn mqtt_receive_client(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
         display_topics: DisplayTopics,
-        publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+        display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+        app_topics: AppTopics,
+        app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
     ) {
         let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
         let rx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
@@ -283,10 +291,7 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         }
 
-        match client
-            .subscribe_to_topic(&display_topics.clock_app_topic)
-            .await
-        {
+        match client.subscribe_to_topic(&app_topics.clock_app_topic).await {
             Ok(_) => {
                 MqttMessage::debug("Subscribed to clock app topic")
                     .send()
@@ -298,9 +303,13 @@ pub mod clients {
         loop {
             match select(client.receive_message(), Timer::after_secs(5)).await {
                 Either::First(received_message) => match received_message {
-                    Ok(message) => {
-                        let message = MqttReceiveMessage::new(message.0, message.1);
-                        publisher.publish(message).await;
+                    Ok(mqtt_message) => {
+                        let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
+                        if mqtt_message.0.contains("display") {
+                            display_publisher.publish(message).await;
+                        } else if mqtt_message.0.contains("app") {
+                            app_publisher.publish(message).await;
+                        }
                     }
                     Err(code) => {
                         show_reason_code(code).await;

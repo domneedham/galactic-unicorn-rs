@@ -250,6 +250,11 @@ impl UnicornApp for ClockApp {
             ButtonPress::Double => {}
         }
     }
+
+    async fn process_mqtt_message(&self, message: crate::mqtt::MqttReceiveMessage) {
+        let effect = ClockEffect::from_mqtt(&message.body);
+        self.set_effect(effect).await;
+    }
 }
 
 fn from_hsv(h: f32, s: f32, v: f32) -> Rgb888 {

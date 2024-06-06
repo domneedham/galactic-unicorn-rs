@@ -28,6 +28,7 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
 use embassy_time::{Duration, Timer};
 use heapless::Vec;
+use mqtt::AppTopics;
 use static_cell::make_static;
 use static_cell::StaticCell;
 
@@ -182,7 +183,17 @@ async fn main(spawner: Spawner) {
     let effects_app = make_static!(effects_app::EffectsApp::new());
     let mqtt_app = make_static!(mqtt::MqttApp::new());
 
+    let app_controller = make_static!(app::AppController::new(
+        clock_app,
+        effects_app,
+        mqtt_app,
+        spawner
+    ));
+
     static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1> =
+        PubSubChannel::new();
+
+    static MQTT_APP_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1> =
         PubSubChannel::new();
 
     // mqtt clients
@@ -208,21 +219,24 @@ async fn main(spawner: Spawner) {
 
     let mut clock_app_topic = heapless::String::<64>::new();
     _ = write!(clock_app_topic, "{BASE_MQTT_TOPIC}");
-    _ = write!(clock_app_topic, "clock_app");
+    _ = write!(clock_app_topic, "app/clock");
 
     let display_topics = DisplayTopics {
         display_topic,
         display_interrupt_topic,
         brightness_topic,
         color_topic,
-        clock_app_topic,
     };
+
+    let app_topics = AppTopics { clock_app_topic };
 
     spawner
         .spawn(mqtt::clients::mqtt_receive_client(
             stack,
             display_topics.clone(),
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
+            app_topics.clone(),
+            MQTT_APP_CHANNEL.publisher().unwrap(),
         ))
         .unwrap();
 
@@ -230,16 +244,17 @@ async fn main(spawner: Spawner) {
         .spawn(display::process_mqtt_messages_task(
             display_topics,
             mqtt_app,
-            clock_app,
             MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
 
-    let app_controller = make_static!(app::AppController::new(
-        clock_app,
-        effects_app,
-        mqtt_app,
-        spawner
-    ));
+    spawner
+        .spawn(app::process_mqtt_messages_task(
+            app_topics,
+            app_controller,
+            MQTT_APP_CHANNEL.subscriber().unwrap(),
+        ))
+        .unwrap();
+
     app_controller.run().await;
 }
