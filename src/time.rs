@@ -1,19 +1,20 @@
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration};
+use chrono_tz::{Tz, GB};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::Instant;
 
 pub struct Time {
-    sys_start: Mutex<CriticalSectionRawMutex, DateTime<Utc>>,
+    sys_start: Mutex<CriticalSectionRawMutex, DateTime<Tz>>,
 }
 
 impl Time {
     pub fn new() -> Self {
         Self {
-            sys_start: Mutex::new(DateTime::UNIX_EPOCH),
+            sys_start: Mutex::new(DateTime::UNIX_EPOCH.with_timezone(&GB)),
         }
     }
 
-    pub async fn set_time(&self, now: DateTime<Utc>) {
+    pub async fn set_time(&self, now: DateTime<Tz>) {
         let mut sys_start = self.sys_start.lock().await;
         let elapsed = Instant::now().as_millis();
         *sys_start = now
@@ -21,7 +22,7 @@ impl Time {
             .expect("sys_start greater as current_ts");
     }
 
-    pub async fn now(&self) -> DateTime<Utc> {
+    pub async fn now(&self) -> DateTime<Tz> {
         let sys_start = self.sys_start.lock().await;
         let elapsed = Instant::now().as_millis();
         *sys_start + Duration::milliseconds(elapsed as i64)
@@ -29,7 +30,8 @@ impl Time {
 }
 
 pub mod ntp {
-    use chrono::{DateTime, Utc};
+    use chrono::DateTime;
+    use chrono_tz::{Tz, GB};
     use embassy_net::{
         dns::DnsQueryType,
         udp::{PacketMetadata, UdpSocket},
@@ -141,7 +143,7 @@ pub mod ntp {
 
     #[derive(Copy, Clone)]
     struct TimestampGen {
-        now: DateTime<Utc>,
+        now: DateTime<Tz>,
     }
 
     impl TimestampGen {
@@ -205,6 +207,7 @@ pub mod ntp {
         let ntp_result = get_time(sock_addr, ntp_socket, ntp_context).await?;
         let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0)
             .ok_or(SntpcError::BadNtpResponse)?;
+        let now = now.with_timezone(&GB);
         time.set_time(now).await;
 
         Ok(())

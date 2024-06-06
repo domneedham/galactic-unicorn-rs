@@ -1,4 +1,3 @@
-use embassy_executor::Spawner;
 use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use galactic_unicorn_embassy::{pins::UnicornDisplayPins, GalacticUnicorn};
@@ -8,8 +7,8 @@ use crate::mqtt::MqttMessage;
 type GalacticUnicornType = Mutex<ThreadModeRawMutex, Option<GalacticUnicorn>>;
 static GALACTIC_UNICORN: GalacticUnicornType = Mutex::new(None);
 
-pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins, spawner: Spawner) {
-    let gu = GalacticUnicorn::new(pio, pins, dma, spawner);
+pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
+    let gu = GalacticUnicorn::new(pio, pins, dma);
     GALACTIC_UNICORN.lock().await.replace(gu);
     MqttMessage::debug("Initialised display").send().await;
 }
@@ -49,7 +48,7 @@ pub mod display {
 
     static CHANGE_COLOR_CHANNEL: PubSubChannel<ThreadModeRawMutex, Rgb888, 1, 2, 1> =
         PubSubChannel::new();
-    static CURRENT_COLOR: Mutex<ThreadModeRawMutex, Rgb888> = Mutex::new(Rgb888::CSS_PURPLE);
+    pub static CURRENT_COLOR: Mutex<ThreadModeRawMutex, Rgb888> = Mutex::new(Rgb888::CSS_PURPLE);
     static CURRENT_GRAPHICS: Mutex<ThreadModeRawMutex, Option<UnicornGraphics<WIDTH, HEIGHT>>> =
         Mutex::new(None);
 
@@ -225,7 +224,7 @@ pub mod display {
 
     pub struct DisplayGraphicsMessage {
         pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
-        duration: Duration,
+        duration: Option<Duration>,
         first_shown: Option<Instant>,
         channel: DisplayChannels,
     }
@@ -235,11 +234,6 @@ pub mod display {
             pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
             duration: Option<Duration>,
         ) -> Self {
-            let duration = match duration {
-                Some(x) => x,
-                None => Duration::from_secs(3),
-            };
-
             Self {
                 pixels,
                 duration,
@@ -257,11 +251,15 @@ pub mod display {
         }
 
         pub fn has_min_duration_passed(&self) -> bool {
+            if self.duration.is_none() {
+                return true;
+            }
+
             if self.first_shown.is_none() {
                 return false;
             }
 
-            self.first_shown.unwrap().elapsed() > self.duration
+            self.first_shown.unwrap().elapsed() > self.duration.unwrap()
         }
     }
 
@@ -299,6 +297,7 @@ pub mod display {
                     self.send().await;
                 }
                 DisplayChannels::APP => {
+                    // clear channel
                     while APP_DISPLAY_CHANNEL.try_receive().is_ok() {}
                     self.send().await;
                 }
@@ -325,20 +324,20 @@ pub mod display {
     }
 
     pub async fn set_color(color: Rgb888) {
+        let old_color = *CURRENT_COLOR.lock().await;
+        *CURRENT_COLOR.lock().await = color;
+
         CURRENT_GRAPHICS
             .lock()
             .await
             .as_mut()
             .unwrap()
-            .replace_color_with_new(*CURRENT_COLOR.lock().await, color);
+            .replace_color_with_new(old_color, color);
 
-        *CURRENT_COLOR.lock().await = color;
         CHANGE_COLOR_CHANNEL
             .publisher()
             .unwrap()
             .publish_immediate(color);
-
-        redraw_graphics().await;
     }
 
     async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
@@ -367,15 +366,15 @@ pub mod display {
     ) {
         message.set_first_shown();
 
-        graphics.pixels = message.pixels;
+        graphics.set_pixels(message.pixels);
         set_graphics(graphics).await;
 
         loop {
-            Timer::after_millis(10).await;
-
             if message.has_min_duration_passed() || STOP_CURRENT_DISPLAY.signaled() {
                 STOP_CURRENT_DISPLAY.reset();
                 break;
+            } else {
+                Timer::after_millis(1).await;
             }
         }
     }
@@ -429,8 +428,8 @@ pub mod display {
                 text.draw(graphics).unwrap();
                 set_graphics(graphics).await;
 
-                x += 0.15;
-                Timer::after_millis(10).await;
+                x += 0.05;
+                Timer::after_millis(1).await;
             }
         } else {
             graphics.fill(Rgb888::new(5, 5, 5));

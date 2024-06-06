@@ -2,6 +2,7 @@ use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, Either3};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
+use embassy_sync::pubsub::Subscriber;
 use embassy_sync::signal::Signal;
 use embassy_time::Duration;
 
@@ -11,7 +12,7 @@ use unicorn_graphics::UnicornGraphics;
 use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
 use crate::clock_app::ClockApp;
 use crate::effects_app::EffectsApp;
-use crate::mqtt::MqttApp;
+use crate::mqtt::{AppTopics, MqttApp, MqttReceiveMessage};
 use crate::unicorn;
 use crate::unicorn::display::DisplayGraphicsMessage;
 
@@ -31,6 +32,8 @@ pub trait UnicornApp {
     async fn stop(&self);
 
     async fn button_press(&self, press: ButtonPress);
+
+    async fn process_mqtt_message(&self, message: MqttReceiveMessage);
 }
 
 pub struct AppController {
@@ -99,6 +102,21 @@ impl AppController {
 }
 
 #[embassy_executor::task]
+pub async fn process_mqtt_messages_task(
+    topics: AppTopics,
+    app_controller: &'static AppController,
+    mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+) {
+    loop {
+        let message = subscriber.next_message_pure().await;
+
+        if &message.topic == &topics.clock_app_topic {
+            app_controller.clock_app.process_mqtt_message(message).await
+        }
+    }
+}
+
+#[embassy_executor::task]
 async fn display_task(app_controller: &'static AppController) {
     let mut blank_graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
     blank_graphics.clear_all();
@@ -118,8 +136,11 @@ async fn display_task(app_controller: &'static AppController) {
 
         unicorn::display::STOP_CURRENT_DISPLAY.signal(true);
         // when switching between apps we want to clear the old queue and blank the display ..
-        DisplayGraphicsMessage::from_app(blank_graphics.pixels, Some(Duration::from_millis(10)))
-            .send_and_replace_queue()
-            .await;
+        DisplayGraphicsMessage::from_app(
+            blank_graphics.get_pixels(),
+            Some(Duration::from_millis(10)),
+        )
+        .send_and_replace_queue()
+        .await;
     }
 }
