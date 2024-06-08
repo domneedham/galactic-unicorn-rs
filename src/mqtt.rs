@@ -256,11 +256,13 @@ pub mod clients {
         let mut clock_app_topic = heapless::String::<64>::new();
         write!(clock_app_topic, "{BASE_MQTT_TOPIC}{CLOCK_APP_TOPIC}").unwrap();
 
-        let mut topics: Vec<&str, 4> = Vec::new();
-        topics.insert(0, &brightness_topic).unwrap();
-        topics.insert(1, &color_topic).unwrap();
-        topics.insert(2, &text_topic).unwrap();
-        topics.insert(3, &clock_app_topic).unwrap();
+        let topics: Vec<&str, 4> = Vec::from_slice(&[
+            brightness_topic.as_str(),
+            color_topic.as_str(),
+            text_topic.as_str(),
+            clock_app_topic.as_str(),
+        ])
+        .unwrap();
 
         match client.subscribe_to_topics(&topics).await {
             Ok(_) => MqttMessage::debug("Subscribed to topics").send().await,
