@@ -24,15 +24,37 @@ pub struct MqttMessage<'a> {
     pub text: &'a str,
     pub qos: QualityOfService,
     pub retain: bool,
+    pub include_base_topic: bool,
 }
 
 impl<'a> MqttMessage<'a> {
+    pub fn new(topic: &'a str, text: &'a str, include_base_topic: bool) -> Self {
+        Self {
+            topic,
+            text,
+            qos: QualityOfService::QoS0,
+            retain: false,
+            include_base_topic,
+        }
+    }
+
     pub fn debug(text: &'a str) -> Self {
         Self {
             topic: "debug",
             text,
             qos: QualityOfService::QoS0,
             retain: false,
+            include_base_topic: true,
+        }
+    }
+
+    pub fn hass(topic: &'a str, text: &'a str) -> Self {
+        Self {
+            topic,
+            text,
+            qos: QualityOfService::QoS0,
+            retain: false,
+            include_base_topic: false,
         }
     }
 }
@@ -145,6 +167,23 @@ pub mod clients {
     };
     use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
 
+    pub async fn send_home_assistant_discovery() {
+        let topic = "homeassistant/select/galactic_unicorn/config";
+        let payload = r#"{
+            "name": null,
+            "~": "galactic_unicorn/app/clock",
+            "stat_t": "~/state",
+            "cmd_t": "~",
+            "uniq_id": "ga_clock_01",
+            "dev": {
+                "ids": "ga_01",
+                "name": "Galactic Unicorn"
+            },
+            "options": ["rainbow", "color"]
+        }"#;
+        MqttMessage::hass(topic, payload).send().await;
+    }
+
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
         let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
@@ -163,32 +202,48 @@ pub mod clients {
         config.add_client_id("client");
         // config.add_username(USERNAME);
         // config.add_password(PASSWORD);
-        config.max_packet_size = 100;
+        config.max_packet_size = 600;
 
-        let mut recv_buffer = [0; 80];
-        let mut write_buffer = [0; 80];
+        let mut recv_buffer = [0; 512];
+        let mut write_buffer = [0; 512];
 
-        let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> =
-            MqttClient::<_, 5, _>::new(socket, &mut write_buffer, 80, &mut recv_buffer, 80, config);
+        let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> = MqttClient::<_, 5, _>::new(
+            socket,
+            &mut write_buffer,
+            512,
+            &mut recv_buffer,
+            512,
+            config,
+        );
 
         client.connect_to_broker().await.unwrap();
+
+        send_home_assistant_discovery().await;
 
         loop {
             match select(SEND_CHANNEL.receive(), Timer::after_secs(5)).await {
                 Either::First(message) => {
                     let mut topic = heapless::String::<256>::new();
-                    _ = write!(topic, "{BASE_MQTT_TOPIC}");
+                    if message.include_base_topic {
+                        _ = write!(topic, "{BASE_MQTT_TOPIC}");
+                    }
                     let message_topic = message.topic;
                     _ = write!(topic, "{message_topic}");
 
-                    let _ = client
+                    match client
                         .send_message(
                             topic.as_str(),
                             message.text.as_bytes(),
                             message.qos,
                             message.retain,
                         )
-                        .await;
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(x) => {
+                            MqttMessage::debug(get_reason_code(x)).send().await;
+                        }
+                    }
                 }
                 Either::Second(_) => match client.send_ping().await {
                     Ok(_) => {}
