@@ -12,20 +12,12 @@ use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
 use crate::{app::UnicornApp, buttons::ButtonPress, unicorn::display::DisplayTextMessage};
 
+pub const BRIGHTNESS_TOPIC: &str = "display/brightness";
+pub const COLOR_TOPIC: &str = "display/color";
+pub const TEXT_TOPIC: &str = "app/text";
+pub const CLOCK_APP_TOPIC: &str = "app/clock";
+
 static SEND_CHANNEL: Channel<ThreadModeRawMutex, MqttMessage, 16> = Channel::new();
-
-#[derive(Clone)]
-pub struct DisplayTopics {
-    pub display_topic: String<64>,
-    pub display_interrupt_topic: String<64>,
-    pub brightness_topic: String<64>,
-    pub color_topic: String<64>,
-}
-
-#[derive(Clone)]
-pub struct AppTopics {
-    pub clock_app_topic: String<64>,
-}
 
 pub struct MqttMessage<'a> {
     pub topic: &'a str,
@@ -140,13 +132,17 @@ pub mod clients {
     use embassy_net::{tcp::TcpSocket, Stack};
     use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, pubsub::Publisher};
     use embassy_time::{Duration, Timer};
+    use heapless::Vec;
     use rust_mqtt::{
         client::{client::MqttClient, client_config::ClientConfig},
         packet::v5::reason_codes::ReasonCode,
         utils::rng_generator::CountingRng,
     };
 
-    use super::{AppTopics, DisplayTopics, MqttMessage, MqttReceiveMessage, SEND_CHANNEL};
+    use super::{
+        MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, CLOCK_APP_TOPIC, COLOR_TOPIC,
+        SEND_CHANNEL, TEXT_TOPIC,
+    };
     use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
 
     #[embassy_executor::task]
@@ -205,9 +201,7 @@ pub mod clients {
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
-        display_topics: DisplayTopics,
         display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
-        app_topics: AppTopics,
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
     ) {
         let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
@@ -250,61 +244,35 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         };
 
-        match client
-            .subscribe_to_topic(&display_topics.display_topic)
-            .await
-        {
-            Ok(_) => {
-                MqttMessage::debug("Subscribed to display topic")
-                    .send()
-                    .await
-            }
-            Err(code) => send_reason_code(code).await,
-        }
+        let mut brightness_topic = heapless::String::<64>::new();
+        write!(brightness_topic, "{BASE_MQTT_TOPIC}{BRIGHTNESS_TOPIC}").unwrap();
 
-        match client
-            .subscribe_to_topic(&display_topics.display_interrupt_topic)
-            .await
-        {
-            Ok(_) => {
-                MqttMessage::debug("Subscribed to display interrupt topic")
-                    .send()
-                    .await
-            }
-            Err(code) => send_reason_code(code).await,
-        }
+        let mut color_topic = heapless::String::<64>::new();
+        write!(color_topic, "{BASE_MQTT_TOPIC}{COLOR_TOPIC}").unwrap();
 
-        match client
-            .subscribe_to_topic(&display_topics.brightness_topic)
-            .await
-        {
-            Ok(_) => {
-                MqttMessage::debug("Subscribed to brightness topic")
-                    .send()
-                    .await
-            }
-            Err(code) => send_reason_code(code).await,
-        }
+        let mut text_topic = heapless::String::<64>::new();
+        write!(text_topic, "{BASE_MQTT_TOPIC}{TEXT_TOPIC}").unwrap();
 
-        match client.subscribe_to_topic(&display_topics.color_topic).await {
-            Ok(_) => MqttMessage::debug("Subscribed to color topic").send().await,
-            Err(code) => send_reason_code(code).await,
-        }
+        let mut clock_app_topic = heapless::String::<64>::new();
+        write!(clock_app_topic, "{BASE_MQTT_TOPIC}{CLOCK_APP_TOPIC}").unwrap();
 
-        match client.subscribe_to_topic(&app_topics.clock_app_topic).await {
-            Ok(_) => {
-                MqttMessage::debug("Subscribed to clock app topic")
-                    .send()
-                    .await
-            }
+        let mut topics: Vec<&str, 4> = Vec::new();
+        topics.insert(0, &brightness_topic).unwrap();
+        topics.insert(1, &color_topic).unwrap();
+        topics.insert(2, &text_topic).unwrap();
+        topics.insert(3, &clock_app_topic).unwrap();
+
+        match client.subscribe_to_topics(&topics).await {
+            Ok(_) => MqttMessage::debug("Subscribed to topics").send().await,
             Err(code) => send_reason_code(code).await,
-        }
+        };
 
         loop {
             match select(client.receive_message(), Timer::after_secs(5)).await {
                 Either::First(received_message) => match received_message {
                     Ok(mqtt_message) => {
                         let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
+
                         if mqtt_message.0.contains("display") {
                             display_publisher.publish(message).await;
                         } else if mqtt_message.0.contains("app") {

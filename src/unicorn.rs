@@ -14,8 +14,6 @@ pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
 }
 
 pub mod display {
-    use core::sync::atomic::Ordering;
-
     use embassy_futures::select::{select, Either};
     use embassy_sync::{
         blocking_mutex::raw::ThreadModeRawMutex,
@@ -41,7 +39,7 @@ pub mod display {
     use crate::{
         buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
         graphics::colors::Rgb888Str,
-        mqtt::{DisplayTopics, MqttApp, MqttReceiveMessage},
+        mqtt::{MqttReceiveMessage, BRIGHTNESS_TOPIC, COLOR_TOPIC},
     };
 
     use super::GALACTIC_UNICORN;
@@ -569,33 +567,18 @@ pub mod display {
 
     #[embassy_executor::task]
     pub async fn process_mqtt_messages_task(
-        topics: DisplayTopics,
-        mqtt_app: &'static MqttApp,
         mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
     ) {
         loop {
             let message = subscriber.next_message_pure().await;
 
-            if &message.topic == &topics.display_topic {
-                let display_message = DisplayTextMessage::from_mqtt(&message.body, None, None);
-                if mqtt_app.is_active.load(Ordering::Relaxed) {
-                    display_message.send_and_show_now().await;
-                } else {
-                    display_message.send().await;
-                }
-
-                mqtt_app.set_last_message(message.body).await;
-            } else if &message.topic == &topics.display_interrupt_topic {
-                DisplayTextMessage::from_mqtt(&message.body, None, None)
-                    .send_and_show_now()
-                    .await;
-            } else if &message.topic == &topics.brightness_topic {
+            if message.topic.contains(BRIGHTNESS_TOPIC) {
                 let brightness: u8 = match message.body.parse() {
                     Ok(value) => value,
                     Err(_) => 255,
                 };
                 set_brightness(brightness).await;
-            } else if &message.topic == &topics.color_topic {
+            } else if message.topic.contains(COLOR_TOPIC) {
                 match Rgb888::from_str(&message.body) {
                     Some(color) => {
                         set_color(color).await;

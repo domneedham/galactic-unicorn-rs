@@ -15,8 +15,6 @@ mod mqtt;
 mod time;
 mod unicorn;
 
-use core::fmt::Write;
-
 use cyw43_pio::PioSpi;
 use embassy_executor::Spawner;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
@@ -28,7 +26,6 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
 use embassy_time::{Duration, Timer};
 use heapless::Vec;
-use mqtt::AppTopics;
 use static_cell::make_static;
 use static_cell::StaticCell;
 
@@ -42,7 +39,7 @@ use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
 };
 use crate::config::*;
-use crate::mqtt::{DisplayTopics, MqttReceiveMessage};
+use crate::mqtt::MqttReceiveMessage;
 use crate::unicorn::display;
 use crate::unicorn::display::DisplayTextMessage;
 
@@ -201,56 +198,22 @@ async fn main(spawner: Spawner) {
         .spawn(mqtt::clients::mqtt_send_client(stack))
         .unwrap();
 
-    let mut display_topic = heapless::String::<64>::new();
-    _ = write!(display_topic, "{BASE_MQTT_TOPIC}");
-    _ = write!(display_topic, "display");
-
-    let mut display_interrupt_topic = heapless::String::<64>::new();
-    _ = write!(display_interrupt_topic, "{BASE_MQTT_TOPIC}");
-    _ = write!(display_interrupt_topic, "display/interrupt");
-
-    let mut brightness_topic = heapless::String::<64>::new();
-    _ = write!(brightness_topic, "{BASE_MQTT_TOPIC}");
-    _ = write!(brightness_topic, "display/brightness");
-
-    let mut color_topic = heapless::String::<64>::new();
-    _ = write!(color_topic, "{BASE_MQTT_TOPIC}");
-    _ = write!(color_topic, "display/color");
-
-    let mut clock_app_topic = heapless::String::<64>::new();
-    _ = write!(clock_app_topic, "{BASE_MQTT_TOPIC}");
-    _ = write!(clock_app_topic, "app/clock");
-
-    let display_topics = DisplayTopics {
-        display_topic,
-        display_interrupt_topic,
-        brightness_topic,
-        color_topic,
-    };
-
-    let app_topics = AppTopics { clock_app_topic };
-
     spawner
         .spawn(mqtt::clients::mqtt_receive_client(
             stack,
-            display_topics.clone(),
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
-            app_topics.clone(),
             MQTT_APP_CHANNEL.publisher().unwrap(),
         ))
         .unwrap();
 
     spawner
         .spawn(display::process_mqtt_messages_task(
-            display_topics,
-            mqtt_app,
             MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
 
     spawner
         .spawn(app::process_mqtt_messages_task(
-            app_topics,
             app_controller,
             MQTT_APP_CHANNEL.subscriber().unwrap(),
         ))

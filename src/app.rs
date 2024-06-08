@@ -12,9 +12,9 @@ use unicorn_graphics::UnicornGraphics;
 use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
 use crate::clock_app::ClockApp;
 use crate::effects_app::EffectsApp;
-use crate::mqtt::{AppTopics, MqttApp, MqttReceiveMessage};
+use crate::mqtt::{MqttApp, MqttReceiveMessage, CLOCK_APP_TOPIC, TEXT_TOPIC};
 use crate::unicorn;
-use crate::unicorn::display::DisplayGraphicsMessage;
+use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
 
 static CHANGE_APP: Signal<ThreadModeRawMutex, Apps> = Signal::new();
 
@@ -103,14 +103,18 @@ impl AppController {
 
 #[embassy_executor::task]
 pub async fn process_mqtt_messages_task(
-    topics: AppTopics,
     app_controller: &'static AppController,
     mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
 ) {
     loop {
         let message = subscriber.next_message_pure().await;
 
-        if &message.topic == &topics.clock_app_topic {
+        if message.topic.contains(TEXT_TOPIC) {
+            DisplayTextMessage::from_mqtt(&message.body, None, None)
+                .send()
+                .await;
+            app_controller.mqtt_app.set_last_message(message.body).await;
+        } else if message.topic.contains(CLOCK_APP_TOPIC) {
             app_controller.clock_app.process_mqtt_message(message).await
         }
     }
