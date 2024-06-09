@@ -19,6 +19,7 @@ pub const CLOCK_APP_TOPIC: &str = "app/clock";
 
 static SEND_CHANNEL: Channel<ThreadModeRawMutex, MqttMessage, 16> = Channel::new();
 
+#[derive(Clone)]
 pub struct MqttMessage<'a> {
     pub topic: &'a str,
     pub text: &'a str,
@@ -165,7 +166,10 @@ pub mod clients {
         MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, CLOCK_APP_TOPIC, COLOR_TOPIC,
         SEND_CHANNEL, TEXT_TOPIC,
     };
-    use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
+    use crate::{
+        unicorn::display::{send_brightness_state, DisplayTextMessage},
+        BASE_MQTT_TOPIC,
+    };
 
     pub async fn send_home_assistant_discovery() {
         let topic = "homeassistant/select/galactic_unicorn/config";
@@ -182,6 +186,24 @@ pub mod clients {
             "options": ["rainbow", "color"]
         }"#;
         MqttMessage::hass(topic, payload).send().await;
+
+        let topic = "homeassistant/number/galactic_unicorn/config";
+        let payload = r#"{
+            "name": "Brightness",
+            "~": "galactic_unicorn/display/brightness",
+            "stat_t": "~/state",
+            "cmd_t": "~",
+            "uniq_id": "ga_brightness_01",
+            "dev": {
+                "ids": "ga_01",
+                "name": "Galactic Unicorn"
+            },
+            "min": 1,
+            "max": 255,
+        }"#;
+        MqttMessage::hass(topic, payload).send().await;
+
+        send_brightness_state().await;
     }
 
     #[embassy_executor::task]
