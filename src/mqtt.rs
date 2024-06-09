@@ -173,34 +173,52 @@ pub mod clients {
 
     pub async fn send_home_assistant_discovery() {
         let topic = "homeassistant/select/galactic_unicorn/config";
-        let payload = r#"{
-            "name": null,
-            "~": "galactic_unicorn/app/clock",
-            "stat_t": "~/state",
-            "cmd_t": "~",
-            "uniq_id": "ga_clock_01",
-            "dev": {
-                "ids": "ga_01",
-                "name": "Galactic Unicorn"
-            },
-            "options": ["rainbow", "color"]
-        }"#;
+        let payload = r#"
+{
+  "dev" : {
+    "name": "Galactic Unicorn",
+    "ids": "ga_01"
+  },
+  "name": "Clock effect",
+  "uniq_id": "ga_clock_01",
+  "~": "galactic_unicorn/app/clock",
+  "stat_t": "~/state",
+  "cmd_t": "~",
+  "options": ["rainbow", "color"]
+}"#
+        .trim();
         MqttMessage::hass(topic, payload).send().await;
 
         let topic = "homeassistant/number/galactic_unicorn/config";
-        let payload = r#"{
-            "name": "Brightness",
-            "~": "galactic_unicorn/display/brightness",
-            "stat_t": "~/state",
-            "cmd_t": "~",
-            "uniq_id": "ga_brightness_01",
-            "dev": {
-                "ids": "ga_01",
-                "name": "Galactic Unicorn"
-            },
-            "min": 1,
-            "max": 255,
-        }"#;
+        let payload = r#"
+{
+  "dev" : {
+    "name": "Galactic Unicorn",
+    "ids": "ga_01"
+  },
+  "name": "Brightness",
+  "uniq_id": "ga_brightness_01",
+  "~": "galactic_unicorn/display/brightness",
+  "stat_t": "~/state",
+  "cmd_t": "~",
+  "min": 1,
+  "max": 255
+}"#
+        .trim();
+        MqttMessage::hass(topic, payload).send().await;
+
+        let topic = "homeassistant/notify/galactic_unicorn/config";
+        let payload = r#"
+{
+  "dev" : {
+    "name": "Galactic Unicorn",
+    "ids": "ga_01"
+  },
+  "name": "Display text",
+  "cmd_t": "galactic_unicorn/app/text",
+  "uniq_id": "ga_display_text_01"
+}"#
+        .trim();
         MqttMessage::hass(topic, payload).send().await;
 
         send_brightness_state().await;
