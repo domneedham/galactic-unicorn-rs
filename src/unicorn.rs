@@ -2,18 +2,16 @@ use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use galactic_unicorn_embassy::{pins::UnicornDisplayPins, GalacticUnicorn};
 
-use crate::mqtt::MqttMessage;
-
 type GalacticUnicornType = Mutex<ThreadModeRawMutex, Option<GalacticUnicorn>>;
 static GALACTIC_UNICORN: GalacticUnicornType = Mutex::new(None);
 
 pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
     let gu = GalacticUnicorn::new(pio, pins, dma);
     GALACTIC_UNICORN.lock().await.replace(gu);
-    MqttMessage::debug("Initialised display").send().await;
 }
 
 pub mod display {
+    use core::fmt::Write;
     use embassy_futures::select::{select, Either};
     use embassy_sync::{
         blocking_mutex::raw::ThreadModeRawMutex,
@@ -25,6 +23,7 @@ pub mod display {
     use embassy_time::{Duration, Instant, Timer};
     use embedded_graphics::{
         mono_font::{ascii::FONT_6X10, MonoTextStyle},
+        pixelcolor::RgbColor,
         text::{Alignment, Baseline, Text},
     };
     use embedded_graphics_core::{
@@ -39,7 +38,7 @@ pub mod display {
     use crate::{
         buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
         graphics::colors::Rgb888Str,
-        mqtt::{MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, COLOR_TOPIC},
+        mqtt::{MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, COLOR_TOPIC, RGB_TOPIC},
     };
 
     use super::{utils, GALACTIC_UNICORN};
@@ -325,11 +324,9 @@ pub mod display {
 
     pub async fn send_brightness_state() {
         let brightness = GALACTIC_UNICORN.lock().await.as_ref().unwrap().brightness;
-        let text = utils::brightness_to_str(brightness);
+        let text = utils::u8_to_str(brightness);
 
-        MqttMessage::new("display/brightness/state", text, true)
-            .send()
-            .await;
+        MqttMessage::enqueue_state("display/brightness/state", text).await;
     }
 
     pub async fn set_color(color: Rgb888) {
@@ -347,6 +344,20 @@ pub mod display {
             .publisher()
             .unwrap()
             .publish_immediate(color);
+
+        send_color_state().await;
+    }
+
+    pub async fn send_color_state() {
+        let color = *CURRENT_COLOR.lock().await;
+        let r = utils::u8_to_str(color.r());
+        let g = utils::u8_to_str(color.g());
+        let b = utils::u8_to_str(color.b());
+
+        let mut text = String::<11>::new();
+        write!(text, "{r},{g},{b}").unwrap();
+
+        MqttMessage::enqueue_state("display/rgb/state", &text).await;
     }
 
     async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
@@ -596,6 +607,51 @@ pub mod display {
                     }
                     None => {}
                 };
+            } else if message.topic.contains(RGB_TOPIC) {
+                let mut r = String::<3>::new();
+                let mut g = String::<3>::new();
+                let mut b = String::<3>::new();
+
+                let mut r_compl = false;
+                let mut g_compl = false;
+                let mut b_compl = false;
+                for c in message.body.chars() {
+                    if !r_compl {
+                        if c == ',' {
+                            r_compl = true;
+                        } else {
+                            write!(r, "{c}").unwrap();
+                        }
+
+                        continue;
+                    }
+
+                    if !g_compl {
+                        if c == ',' {
+                            g_compl = true;
+                        } else {
+                            write!(g, "{c}").unwrap();
+                        }
+
+                        continue;
+                    }
+
+                    if !b_compl {
+                        if c == ',' {
+                            b_compl = true;
+                        } else {
+                            write!(b, "{c}").unwrap();
+                        }
+
+                        continue;
+                    }
+                }
+
+                let r = r.parse::<u8>().unwrap_or_default();
+                let g = g.parse::<u8>().unwrap_or_default();
+                let b = b.parse::<u8>().unwrap_or_default();
+
+                set_color(Rgb888::new(r, g, b)).await;
             }
         }
     }
@@ -624,7 +680,7 @@ mod utils {
         "249", "250", "251", "252", "253", "254", "255",
     ];
 
-    pub(crate) fn brightness_to_str(value: u8) -> &'static str {
+    pub(crate) fn u8_to_str(value: u8) -> &'static str {
         U8_STRINGS[value as usize]
     }
 }

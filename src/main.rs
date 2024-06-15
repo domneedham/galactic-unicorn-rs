@@ -26,6 +26,7 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
 use embassy_time::{Duration, Timer};
 use heapless::Vec;
+use mqtt::clients::send_home_assistant_discovery;
 use static_cell::make_static;
 use static_cell::StaticCell;
 
@@ -218,6 +219,8 @@ async fn main(spawner: Spawner) {
             MQTT_APP_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
+
+    send_home_assistant_discovery().await;
 
     app_controller.run().await;
 }

@@ -66,7 +66,7 @@ impl ClockApp {
             ClockEffect::Rainbow => "rainbow",
             ClockEffect::Color => "color",
         };
-        MqttMessage::new("app/clock/state", text, true).send().await;
+        MqttMessage::enqueue_state("app/clock/state", text).await;
     }
 
     pub async fn get_date_str(&self) -> String<12> {

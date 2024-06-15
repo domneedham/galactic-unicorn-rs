@@ -14,55 +14,89 @@ use crate::{app::UnicornApp, buttons::ButtonPress, unicorn::display::DisplayText
 
 pub const BRIGHTNESS_TOPIC: &str = "display/brightness";
 pub const COLOR_TOPIC: &str = "display/color";
+pub const RGB_TOPIC: &str = "display/rgb/set";
 pub const TEXT_TOPIC: &str = "app/text";
 pub const CLOCK_APP_TOPIC: &str = "app/clock";
 
-static SEND_CHANNEL: Channel<ThreadModeRawMutex, MqttMessage, 16> = Channel::new();
+static SEND_CHANNEL: Channel<ThreadModeRawMutex, &'static mut MqttMessage, 4> = Channel::new();
 
-#[derive(Clone)]
-pub struct MqttMessage<'a> {
-    pub topic: &'a str,
-    pub text: &'a str,
-    pub qos: QualityOfService,
-    pub retain: bool,
-    pub include_base_topic: bool,
+static mut MESSAGE_POOL: [MqttMessage; 4] = [
+    MqttMessage::new(),
+    MqttMessage::new(),
+    MqttMessage::new(),
+    MqttMessage::new(),
+];
+
+pub struct MqttMessage {
+    topic: &'static str,
+    text: String<512>,
+    qos: QualityOfService,
+    retain: bool,
+    include_base_topic: bool,
+    in_use: bool,
 }
 
-impl<'a> MqttMessage<'a> {
-    pub fn new(topic: &'a str, text: &'a str, include_base_topic: bool) -> Self {
-        Self {
-            topic,
-            text,
-            qos: QualityOfService::QoS0,
-            retain: false,
-            include_base_topic,
-        }
-    }
-
-    pub fn debug(text: &'a str) -> Self {
-        Self {
-            topic: "debug",
-            text,
-            qos: QualityOfService::QoS0,
-            retain: false,
-            include_base_topic: true,
-        }
-    }
-
-    pub fn hass(topic: &'a str, text: &'a str) -> Self {
-        Self {
-            topic,
-            text,
+impl MqttMessage {
+    const fn new() -> Self {
+        MqttMessage {
+            topic: "",
+            text: String::new(),
             qos: QualityOfService::QoS0,
             retain: false,
             include_base_topic: false,
+            in_use: false,
         }
     }
-}
 
-impl MqttMessage<'static> {
-    pub async fn send(self) {
-        SEND_CHANNEL.send(self).await;
+    fn reuse(
+        &mut self,
+        topic: &'static str,
+        content: &str,
+        qos: QualityOfService,
+        retain: bool,
+        include_base_topic: bool,
+    ) {
+        self.in_use = true;
+
+        self.topic = topic;
+        self.text.clear();
+        self.text.push_str(content).unwrap();
+        self.qos = qos;
+        self.retain = retain;
+        self.include_base_topic = include_base_topic;
+    }
+
+    fn release(&mut self) {
+        self.in_use = false;
+    }
+
+    pub async fn enqueue_state(topic: &'static str, content: &str) {
+        Self::enqueue(topic, content, QualityOfService::QoS0, false, true).await;
+    }
+
+    pub async fn enqueue_debug(content: &str) {
+        Self::enqueue("debug", content, QualityOfService::QoS0, false, true).await;
+    }
+
+    pub async fn enqueue_hass(topic: &'static str, content: &str) {
+        Self::enqueue(topic, content, QualityOfService::QoS0, false, false).await;
+    }
+
+    pub async fn enqueue(
+        topic: &'static str,
+        content: &str,
+        qos: QualityOfService,
+        retain: bool,
+        include_base_topic: bool,
+    ) {
+        for message in unsafe { &mut MESSAGE_POOL } {
+            if !message.in_use {
+                message.reuse(topic, content, qos, retain, include_base_topic);
+
+                SEND_CHANNEL.send(message).await;
+                break;
+            }
+        }
     }
 }
 
@@ -163,11 +197,11 @@ pub mod clients {
     };
 
     use super::{
-        MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, CLOCK_APP_TOPIC, COLOR_TOPIC,
+        MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, CLOCK_APP_TOPIC, COLOR_TOPIC, RGB_TOPIC,
         SEND_CHANNEL, TEXT_TOPIC,
     };
     use crate::{
-        unicorn::display::{send_brightness_state, DisplayTextMessage},
+        unicorn::display::{send_brightness_state, send_color_state, DisplayTextMessage},
         BASE_MQTT_TOPIC,
     };
 
@@ -187,7 +221,7 @@ pub mod clients {
   "options": ["rainbow", "color"]
 }"#
         .trim();
-        MqttMessage::hass(topic, payload).send().await;
+        MqttMessage::enqueue_hass(topic, payload).await;
 
         let topic = "homeassistant/number/galactic_unicorn/config";
         let payload = r#"
@@ -205,7 +239,7 @@ pub mod clients {
   "max": 255
 }"#
         .trim();
-        MqttMessage::hass(topic, payload).send().await;
+        MqttMessage::enqueue_hass(topic, payload).await;
 
         let topic = "homeassistant/notify/galactic_unicorn/config";
         let payload = r#"
@@ -219,9 +253,30 @@ pub mod clients {
   "uniq_id": "ga_display_text_01"
 }"#
         .trim();
-        MqttMessage::hass(topic, payload).send().await;
+        MqttMessage::enqueue_hass(topic, payload).await;
+
+        let topic = "homeassistant/light/galactic_unicorn/config";
+        let payload = r#"
+{
+  "dev" : {
+    "name": "Galactic Unicorn",
+    "ids": "ga_01"
+  },
+  "name": "Display",
+  "~": "galactic_unicorn/display",
+  "cmd_t": "~/switch",
+  "rgb_stat_t": "~/rgb/state",
+  "rgb_cmd_t": "~/rgb/set",
+  "bri_stat_t": "~/brightness/state",
+  "bri_cmd_t": "~/brightness",
+  "on_cmd_type": "brightness",
+  "uniq_id": "ga_light_01"
+}"#
+        .trim();
+        MqttMessage::enqueue_hass(topic, payload).await;
 
         send_brightness_state().await;
+        send_color_state().await;
     }
 
     #[embassy_executor::task]
@@ -258,8 +313,6 @@ pub mod clients {
 
         client.connect_to_broker().await.unwrap();
 
-        send_home_assistant_discovery().await;
-
         loop {
             match select(SEND_CHANNEL.receive(), Timer::after_secs(5)).await {
                 Either::First(message) => {
@@ -279,9 +332,12 @@ pub mod clients {
                         )
                         .await
                     {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            message.release();
+                        }
                         Err(x) => {
-                            MqttMessage::debug(get_reason_code(x)).send().await;
+                            message.release();
+                            MqttMessage::enqueue_debug(get_reason_code(x)).await;
                         }
                     }
                 }
@@ -332,9 +388,7 @@ pub mod clients {
 
         match client.connect_to_broker().await {
             Ok(_) => {
-                MqttMessage::debug("Connected to receiver broker")
-                    .send()
-                    .await
+                MqttMessage::enqueue_debug("Connected to receiver broker").await;
             }
             Err(code) => send_reason_code(code).await,
         };
@@ -345,22 +399,26 @@ pub mod clients {
         let mut color_topic = heapless::String::<64>::new();
         write!(color_topic, "{BASE_MQTT_TOPIC}{COLOR_TOPIC}").unwrap();
 
+        let mut rgb_topic = heapless::String::<64>::new();
+        write!(rgb_topic, "{BASE_MQTT_TOPIC}{RGB_TOPIC}").unwrap();
+
         let mut text_topic = heapless::String::<64>::new();
         write!(text_topic, "{BASE_MQTT_TOPIC}{TEXT_TOPIC}").unwrap();
 
         let mut clock_app_topic = heapless::String::<64>::new();
         write!(clock_app_topic, "{BASE_MQTT_TOPIC}{CLOCK_APP_TOPIC}").unwrap();
 
-        let topics: Vec<&str, 4> = Vec::from_slice(&[
+        let topics: Vec<&str, 5> = Vec::from_slice(&[
             brightness_topic.as_str(),
             color_topic.as_str(),
+            rgb_topic.as_str(),
             text_topic.as_str(),
             clock_app_topic.as_str(),
         ])
         .unwrap();
 
         match client.subscribe_to_topics(&topics).await {
-            Ok(_) => MqttMessage::debug("Subscribed to topics").send().await,
+            Ok(_) => MqttMessage::enqueue_debug("Subscribed to topics").await,
             Err(code) => send_reason_code(code).await,
         };
 
@@ -443,7 +501,7 @@ pub mod clients {
 
     async fn send_reason_code(code: ReasonCode) {
         let message = get_reason_code(code);
-        MqttMessage::debug(message).send().await;
+        MqttMessage::enqueue_debug(message).await;
     }
 
     async fn show_reason_code(code: ReasonCode) {
