@@ -137,8 +137,6 @@ impl UnicornApp for ClockApp {
             .build();
         let red_style = PrimitiveStyleBuilder::new().fill_color(Rgb888::RED).build();
 
-        self.send_state().await;
-
         loop {
             let effect = *self.effect.lock().await;
 

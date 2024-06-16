@@ -8,6 +8,7 @@ pub const BRIGHTNESS_TOPIC: &str = "display/brightness";
 pub const COLOR_TOPIC: &str = "display/color";
 pub const RGB_TOPIC: &str = "display/rgb/set";
 pub const TEXT_TOPIC: &str = "app/text";
+pub const APP_TOPIC: &str = "app";
 pub const CLOCK_APP_TOPIC: &str = "app/clock";
 
 static SEND_CHANNEL: Channel<ThreadModeRawMutex, &'static mut MqttMessage, 4> = Channel::new();
@@ -126,8 +127,8 @@ pub mod clients {
     };
 
     use super::{
-        homeassistant, MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, CLOCK_APP_TOPIC,
-        COLOR_TOPIC, RGB_TOPIC, SEND_CHANNEL, TEXT_TOPIC,
+        homeassistant, MqttMessage, MqttReceiveMessage, APP_TOPIC, BRIGHTNESS_TOPIC,
+        CLOCK_APP_TOPIC, COLOR_TOPIC, RGB_TOPIC, SEND_CHANNEL, TEXT_TOPIC,
     };
     use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
 
@@ -257,16 +258,20 @@ pub mod clients {
         let mut text_topic = heapless::String::<64>::new();
         write!(text_topic, "{BASE_MQTT_TOPIC}{TEXT_TOPIC}").unwrap();
 
+        let mut app_topic = heapless::String::<64>::new();
+        write!(app_topic, "{BASE_MQTT_TOPIC}{APP_TOPIC}").unwrap();
+
         let mut clock_app_topic = heapless::String::<64>::new();
         write!(clock_app_topic, "{BASE_MQTT_TOPIC}{CLOCK_APP_TOPIC}").unwrap();
 
         let hass_topic = "homeassistant/status";
 
-        let topics: Vec<&str, 6> = Vec::from_slice(&[
+        let topics: Vec<&str, 7> = Vec::from_slice(&[
             brightness_topic.as_str(),
             color_topic.as_str(),
             rgb_topic.as_str(),
             text_topic.as_str(),
+            app_topic.as_str(),
             clock_app_topic.as_str(),
             hass_topic,
         ])
@@ -385,7 +390,7 @@ pub mod homeassistant {
         Channel::new();
 
     async fn send_home_assistant_discovery() {
-        let topic = "homeassistant/select/galactic_unicorn/config";
+        let topic = "homeassistant/select/galactic_unicorn/clock_effect/config";
         let payload = r#"
 {
   "dev" : {
@@ -402,7 +407,24 @@ pub mod homeassistant {
         .trim();
         MqttMessage::enqueue_hass(topic, payload).await;
 
-        let topic = "homeassistant/notify/galactic_unicorn/config";
+        let topic = "homeassistant/select/galactic_unicorn/active_app/config";
+        let payload = r#"
+{
+  "dev" : {
+    "name": "Galactic Unicorn",
+    "ids": "ga_01"
+  },
+  "name": "Active app",
+  "uniq_id": "ga_apps_01",
+  "~": "galactic_unicorn/app",
+  "stat_t": "~/state",
+  "cmd_t": "~",
+  "options": ["clock", "effects", "mqtt"]
+}"#
+        .trim();
+        MqttMessage::enqueue_hass(topic, payload).await;
+
+        let topic = "homeassistant/notify/galactic_unicorn/mqtt_message/config";
         let payload = r#"
 {
   "dev" : {
@@ -416,7 +438,7 @@ pub mod homeassistant {
         .trim();
         MqttMessage::enqueue_hass(topic, payload).await;
 
-        let topic = "homeassistant/light/galactic_unicorn/config";
+        let topic = "homeassistant/light/galactic_unicorn/board/config";
         let payload = r#"
 {
   "dev" : {

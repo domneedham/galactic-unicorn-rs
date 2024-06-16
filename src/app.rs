@@ -12,7 +12,7 @@ use unicorn_graphics::UnicornGraphics;
 use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
 use crate::clock_app::ClockApp;
 use crate::effects_app::EffectsApp;
-use crate::mqtt::{MqttReceiveMessage, CLOCK_APP_TOPIC, TEXT_TOPIC};
+use crate::mqtt::{MqttMessage, MqttReceiveMessage, APP_TOPIC, CLOCK_APP_TOPIC, TEXT_TOPIC};
 use crate::mqtt_app::MqttApp;
 use crate::unicorn;
 use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
@@ -24,6 +24,25 @@ enum Apps {
     Clock,
     Effects,
     Mqtt,
+}
+
+impl Apps {
+    pub fn from_mqtt(text: &str) -> Option<Self> {
+        match text {
+            "clock" => Some(Apps::Clock),
+            "effects" => Some(Apps::Effects),
+            "mqtt" => Some(Apps::Mqtt),
+            _ => None,
+        }
+    }
+
+    pub fn to_mqtt(&self) -> &str {
+        match self {
+            Apps::Clock => "clock",
+            Apps::Effects => "effects",
+            Apps::Mqtt => "mqtt",
+        }
+    }
 }
 
 pub trait UnicornApp {
@@ -77,35 +96,48 @@ impl AppController {
                 Either3::Third(press) => (Apps::Mqtt, press),
             };
 
-            let current_app = *self.active_app.lock().await;
             if app == *self.active_app.lock().await {
+                let current_app = *self.active_app.lock().await;
+
                 match current_app {
                     Apps::Clock => self.clock_app.button_press(press).await,
                     Apps::Effects => self.effects_app.button_press(press).await,
                     Apps::Mqtt => self.mqtt_app.button_press(press).await,
                 }
             } else {
-                match current_app {
-                    Apps::Clock => self.clock_app.stop().await,
-                    Apps::Effects => self.effects_app.stop().await,
-                    Apps::Mqtt => self.mqtt_app.stop().await,
-                };
-
-                *self.active_app.lock().await = app;
-                match app {
-                    Apps::Clock => self.clock_app.start().await,
-                    Apps::Effects => self.effects_app.start().await,
-                    Apps::Mqtt => self.mqtt_app.start().await,
-                };
-                CHANGE_APP.signal(app);
+                self.change_app(app).await;
             }
+
+            self.send_states().await;
         }
     }
 
     pub async fn send_states(&self) {
+        let active_app = *self.active_app.lock().await;
+        let app_text = active_app.to_mqtt();
+        MqttMessage::enqueue_state("app/state", app_text).await;
+
         self.clock_app.send_state().await;
         self.effects_app.send_state().await;
         self.mqtt_app.send_state().await;
+    }
+
+    async fn change_app(&self, new_app: Apps) {
+        let current_app = *self.active_app.lock().await;
+
+        match current_app {
+            Apps::Clock => self.clock_app.stop().await,
+            Apps::Effects => self.effects_app.stop().await,
+            Apps::Mqtt => self.mqtt_app.stop().await,
+        };
+
+        *self.active_app.lock().await = new_app;
+        match new_app {
+            Apps::Clock => self.clock_app.start().await,
+            Apps::Effects => self.effects_app.start().await,
+            Apps::Mqtt => self.mqtt_app.start().await,
+        };
+        CHANGE_APP.signal(new_app);
     }
 }
 
@@ -123,8 +155,16 @@ pub async fn process_mqtt_messages_task(
                 .await;
             app_controller.mqtt_app.set_last_message(message.body).await;
         } else if message.topic.contains(CLOCK_APP_TOPIC) {
-            app_controller.clock_app.process_mqtt_message(message).await
+            app_controller.clock_app.process_mqtt_message(message).await;
+
+        // process this last
+        } else if message.topic.contains(APP_TOPIC) {
+            if let Some(new_app) = Apps::from_mqtt(&message.body) {
+                app_controller.change_app(new_app).await;
+            }
         }
+
+        app_controller.send_states().await;
     }
 }
 
