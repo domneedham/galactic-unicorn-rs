@@ -242,7 +242,14 @@ impl UnicornApp for ClockApp {
                 .await;
             }
             ButtonPress::Long => {}
-            ButtonPress::Double => {}
+            ButtonPress::Double => {
+                let current = *self.effect.lock().await;
+                let new = match current {
+                    ClockEffect::Color => ClockEffect::Rainbow,
+                    ClockEffect::Rainbow => ClockEffect::Color,
+                };
+                self.set_effect(new).await;
+            }
         }
     }
 
