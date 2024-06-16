@@ -1,5 +1,5 @@
 use chrono::{Datelike, Timelike, Weekday};
-use core::fmt::Write;
+use core::{fmt::Write, str::FromStr};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::Timer;
 use embedded_graphics::{
@@ -13,6 +13,7 @@ use embedded_graphics_core::Drawable;
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use heapless::{String, Vec};
 use micromath::F32Ext as _; // needed for rem_euclid, floor, abs and round
+use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
 use crate::{
@@ -27,19 +28,11 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, EnumString, IntoStaticStr)]
+#[strum(ascii_case_insensitive)]
 pub enum ClockEffect {
     Rainbow,
     Color,
-}
-
-impl ClockEffect {
-    pub fn from_mqtt(message: &str) -> ClockEffect {
-        match message {
-            "rainbow" => ClockEffect::Rainbow,
-            _ => ClockEffect::Color,
-        }
-    }
 }
 
 pub struct ClockApp {
@@ -254,16 +247,14 @@ impl UnicornApp for ClockApp {
     }
 
     async fn process_mqtt_message(&self, message: crate::mqtt::MqttReceiveMessage) {
-        let effect = ClockEffect::from_mqtt(&message.body);
-        self.set_effect(effect).await;
+        if let Ok(effect) = ClockEffect::from_str(&message.body) {
+            self.set_effect(effect).await;
+        }
     }
 
     async fn send_state(&self) {
         let effect = *self.effect.lock().await;
-        let text = match effect {
-            ClockEffect::Rainbow => "rainbow",
-            ClockEffect::Color => "color",
-        };
+        let text = effect.into();
         MqttMessage::enqueue_state("app/clock/state", text).await;
     }
 }

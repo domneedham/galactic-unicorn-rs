@@ -402,7 +402,7 @@ pub mod homeassistant {
   "~": "galactic_unicorn/app/clock",
   "stat_t": "~/state",
   "cmd_t": "~",
-  "options": ["rainbow", "color"]
+  "options": ["Rainbow", "Color"]
 }"#
         .trim();
         MqttMessage::enqueue_hass(topic, payload).await;
@@ -419,7 +419,7 @@ pub mod homeassistant {
   "~": "galactic_unicorn/app",
   "stat_t": "~/state",
   "cmd_t": "~",
-  "options": ["clock", "effects", "mqtt"]
+  "options": ["Clock", "Effects", "Mqtt"]
 }"#
         .trim();
         MqttMessage::enqueue_hass(topic, payload).await;

@@ -1,3 +1,5 @@
+use core::str::FromStr;
+
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, Either3};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -7,6 +9,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::Duration;
 
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
+use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
 use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
@@ -19,30 +22,12 @@ use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
 
 static CHANGE_APP: Signal<ThreadModeRawMutex, Apps> = Signal::new();
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, EnumString, IntoStaticStr)]
+#[strum(ascii_case_insensitive)]
 enum Apps {
     Clock,
     Effects,
     Mqtt,
-}
-
-impl Apps {
-    pub fn from_mqtt(text: &str) -> Option<Self> {
-        match text {
-            "clock" => Some(Apps::Clock),
-            "effects" => Some(Apps::Effects),
-            "mqtt" => Some(Apps::Mqtt),
-            _ => None,
-        }
-    }
-
-    pub fn to_mqtt(&self) -> &str {
-        match self {
-            Apps::Clock => "clock",
-            Apps::Effects => "effects",
-            Apps::Mqtt => "mqtt",
-        }
-    }
 }
 
 pub trait UnicornApp {
@@ -114,7 +99,7 @@ impl AppController {
 
     pub async fn send_states(&self) {
         let active_app = *self.active_app.lock().await;
-        let app_text = active_app.to_mqtt();
+        let app_text = active_app.into();
         MqttMessage::enqueue_state("app/state", app_text).await;
 
         self.clock_app.send_state().await;
@@ -159,7 +144,7 @@ pub async fn process_mqtt_messages_task(
 
         // process this last
         } else if message.topic.contains(APP_TOPIC) {
-            if let Some(new_app) = Apps::from_mqtt(&message.body) {
+            if let Ok(new_app) = Apps::from_str(&message.body) {
                 app_controller.change_app(new_app).await;
             }
         }
