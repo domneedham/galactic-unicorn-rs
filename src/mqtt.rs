@@ -6,7 +6,7 @@ use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
 pub const BRIGHTNESS_TOPIC: &str = "display/brightness";
 pub const COLOR_TOPIC: &str = "display/color";
-pub const RGB_TOPIC: &str = "display/rgb/set";
+pub const RGB_TOPIC: &str = "display/rgb";
 pub const TEXT_TOPIC: &str = "app/text";
 pub const APP_TOPIC: &str = "app";
 pub const CLOCK_APP_TOPIC: &str = "app/clock";
@@ -447,9 +447,10 @@ pub mod homeassistant {
   },
   "name": "Display",
   "~": "galactic_unicorn/display",
-  "cmd_t": "~/switch",
+  "cmd_t": "~/brightness",
+  "pl_off": 0,
   "rgb_stat_t": "~/rgb/state",
-  "rgb_cmd_t": "~/rgb/set",
+  "rgb_cmd_t": "~/rgb",
   "bri_stat_t": "~/brightness/state",
   "bri_cmd_t": "~/brightness",
   "on_cmd_type": "brightness",
