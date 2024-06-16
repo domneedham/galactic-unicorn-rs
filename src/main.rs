@@ -12,6 +12,7 @@ mod effects_app;
 mod fonts;
 mod graphics;
 mod mqtt;
+mod mqtt_app;
 mod time;
 mod unicorn;
 
@@ -26,7 +27,6 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
 use embassy_time::{Duration, Timer};
 use heapless::Vec;
-use mqtt::clients::send_home_assistant_discovery;
 use static_cell::make_static;
 use static_cell::StaticCell;
 
@@ -40,6 +40,7 @@ use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
 };
 use crate::config::*;
+use crate::mqtt::homeassistant::{send_home_assistant_discovery, send_states};
 use crate::mqtt::MqttReceiveMessage;
 use crate::unicorn::display;
 use crate::unicorn::display::DisplayTextMessage;
@@ -179,7 +180,7 @@ async fn main(spawner: Spawner) {
 
     let clock_app = make_static!(clock_app::ClockApp::new(time));
     let effects_app = make_static!(effects_app::EffectsApp::new());
-    let mqtt_app = make_static!(mqtt::MqttApp::new());
+    let mqtt_app = make_static!(mqtt_app::MqttApp::new());
 
     let app_controller = make_static!(app::AppController::new(
         clock_app,
@@ -221,6 +222,7 @@ async fn main(spawner: Spawner) {
         .unwrap();
 
     send_home_assistant_discovery().await;
+    send_states().await;
 
     app_controller.run().await;
 }

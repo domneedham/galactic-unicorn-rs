@@ -12,7 +12,8 @@ use unicorn_graphics::UnicornGraphics;
 use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
 use crate::clock_app::ClockApp;
 use crate::effects_app::EffectsApp;
-use crate::mqtt::{MqttApp, MqttReceiveMessage, CLOCK_APP_TOPIC, TEXT_TOPIC};
+use crate::mqtt::{MqttReceiveMessage, CLOCK_APP_TOPIC, TEXT_TOPIC};
+use crate::mqtt_app::MqttApp;
 use crate::unicorn;
 use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
 

@@ -1,16 +1,8 @@
-use core::{
-    fmt::Write,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::fmt::Write;
 
-use embassy_sync::{
-    blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex, signal::Signal,
-};
-use embassy_time::Duration;
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
 use heapless::String;
 use rust_mqtt::packet::v5::publish_packet::QualityOfService;
-
-use crate::{app::UnicornApp, buttons::ButtonPress, unicorn::display::DisplayTextMessage};
 
 pub const BRIGHTNESS_TOPIC: &str = "display/brightness";
 pub const COLOR_TOPIC: &str = "display/color";
@@ -78,10 +70,6 @@ impl MqttMessage {
         Self::enqueue("debug", content, QualityOfService::QoS0, false, true).await;
     }
 
-    pub async fn enqueue_hass(topic: &'static str, content: &str) {
-        Self::enqueue(topic, content, QualityOfService::QoS0, false, false).await;
-    }
-
     pub async fn enqueue(
         topic: &'static str,
         content: &str,
@@ -122,65 +110,6 @@ impl MqttReceiveMessage {
     }
 }
 
-pub struct MqttApp {
-    pub last_message: Mutex<ThreadModeRawMutex, Option<String<64>>>,
-    pub update_message: Signal<ThreadModeRawMutex, bool>,
-    pub is_active: AtomicBool,
-}
-
-impl MqttApp {
-    pub fn new() -> Self {
-        Self {
-            last_message: Mutex::new(None),
-            update_message: Signal::new(),
-            is_active: AtomicBool::new(false),
-        }
-    }
-
-    pub async fn set_last_message(&self, message: String<64>) {
-        self.last_message.lock().await.replace(message);
-        self.update_message.signal(true);
-    }
-}
-
-impl UnicornApp for MqttApp {
-    async fn display(&self) {
-        loop {
-            match self.last_message.lock().await.as_ref() {
-                Some(val) => {
-                    DisplayTextMessage::from_app(&val, None, None, Some(Duration::from_secs(1)))
-                        .send_and_replace_queue()
-                        .await
-                }
-                None => {
-                    DisplayTextMessage::from_app(
-                        "No message!",
-                        None,
-                        None,
-                        Some(Duration::from_secs(1)),
-                    )
-                    .send_and_replace_queue()
-                    .await
-                }
-            };
-
-            self.update_message.wait().await;
-        }
-    }
-
-    async fn start(&self) {
-        self.is_active.store(true, Ordering::Relaxed);
-    }
-
-    async fn stop(&self) {
-        self.is_active.store(false, Ordering::Relaxed);
-    }
-
-    async fn button_press(&self, _: ButtonPress) {}
-
-    async fn process_mqtt_message(&self, _: MqttReceiveMessage) {}
-}
-
 pub mod clients {
     use core::fmt::Write;
 
@@ -200,84 +129,7 @@ pub mod clients {
         MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, CLOCK_APP_TOPIC, COLOR_TOPIC, RGB_TOPIC,
         SEND_CHANNEL, TEXT_TOPIC,
     };
-    use crate::{
-        unicorn::display::{send_brightness_state, send_color_state, DisplayTextMessage},
-        BASE_MQTT_TOPIC,
-    };
-
-    pub async fn send_home_assistant_discovery() {
-        let topic = "homeassistant/select/galactic_unicorn/config";
-        let payload = r#"
-{
-  "dev" : {
-    "name": "Galactic Unicorn",
-    "ids": "ga_01"
-  },
-  "name": "Clock effect",
-  "uniq_id": "ga_clock_01",
-  "~": "galactic_unicorn/app/clock",
-  "stat_t": "~/state",
-  "cmd_t": "~",
-  "options": ["rainbow", "color"]
-}"#
-        .trim();
-        MqttMessage::enqueue_hass(topic, payload).await;
-
-        let topic = "homeassistant/number/galactic_unicorn/config";
-        let payload = r#"
-{
-  "dev" : {
-    "name": "Galactic Unicorn",
-    "ids": "ga_01"
-  },
-  "name": "Brightness",
-  "uniq_id": "ga_brightness_01",
-  "~": "galactic_unicorn/display/brightness",
-  "stat_t": "~/state",
-  "cmd_t": "~",
-  "min": 1,
-  "max": 255
-}"#
-        .trim();
-        MqttMessage::enqueue_hass(topic, payload).await;
-
-        let topic = "homeassistant/notify/galactic_unicorn/config";
-        let payload = r#"
-{
-  "dev" : {
-    "name": "Galactic Unicorn",
-    "ids": "ga_01"
-  },
-  "name": "Display text",
-  "cmd_t": "galactic_unicorn/app/text",
-  "uniq_id": "ga_display_text_01"
-}"#
-        .trim();
-        MqttMessage::enqueue_hass(topic, payload).await;
-
-        let topic = "homeassistant/light/galactic_unicorn/config";
-        let payload = r#"
-{
-  "dev" : {
-    "name": "Galactic Unicorn",
-    "ids": "ga_01"
-  },
-  "name": "Display",
-  "~": "galactic_unicorn/display",
-  "cmd_t": "~/switch",
-  "rgb_stat_t": "~/rgb/state",
-  "rgb_cmd_t": "~/rgb/set",
-  "bri_stat_t": "~/brightness/state",
-  "bri_cmd_t": "~/brightness",
-  "on_cmd_type": "brightness",
-  "uniq_id": "ga_light_01"
-}"#
-        .trim();
-        MqttMessage::enqueue_hass(topic, payload).await;
-
-        send_brightness_state().await;
-        send_color_state().await;
-    }
+    use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
@@ -509,5 +361,76 @@ pub mod clients {
         DisplayTextMessage::from_system(text, None, None)
             .send_and_replace_queue()
             .await;
+    }
+}
+
+pub mod homeassistant {
+    use rust_mqtt::packet::v5::publish_packet::QualityOfService;
+
+    use crate::display::{send_brightness_state, send_color_state};
+    use crate::mqtt::MqttMessage;
+
+    pub async fn send_home_assistant_discovery() {
+        let topic = "homeassistant/select/galactic_unicorn/config";
+        let payload = r#"
+{
+  "dev" : {
+    "name": "Galactic Unicorn",
+    "ids": "ga_01"
+  },
+  "name": "Clock effect",
+  "uniq_id": "ga_clock_01",
+  "~": "galactic_unicorn/app/clock",
+  "stat_t": "~/state",
+  "cmd_t": "~",
+  "options": ["rainbow", "color"]
+}"#
+        .trim();
+        MqttMessage::enqueue_hass(topic, payload).await;
+
+        let topic = "homeassistant/notify/galactic_unicorn/config";
+        let payload = r#"
+{
+  "dev" : {
+    "name": "Galactic Unicorn",
+    "ids": "ga_01"
+  },
+  "name": "Display text",
+  "cmd_t": "galactic_unicorn/app/text",
+  "uniq_id": "ga_display_text_01"
+}"#
+        .trim();
+        MqttMessage::enqueue_hass(topic, payload).await;
+
+        let topic = "homeassistant/light/galactic_unicorn/config";
+        let payload = r#"
+{
+  "dev" : {
+    "name": "Galactic Unicorn",
+    "ids": "ga_01"
+  },
+  "name": "Display",
+  "~": "galactic_unicorn/display",
+  "cmd_t": "~/switch",
+  "rgb_stat_t": "~/rgb/state",
+  "rgb_cmd_t": "~/rgb/set",
+  "bri_stat_t": "~/brightness/state",
+  "bri_cmd_t": "~/brightness",
+  "on_cmd_type": "brightness",
+  "uniq_id": "ga_light_01"
+}"#
+        .trim();
+        MqttMessage::enqueue_hass(topic, payload).await;
+    }
+
+    pub async fn send_states() {
+        send_brightness_state().await;
+        send_color_state().await;
+    }
+
+    impl MqttMessage {
+        async fn enqueue_hass(topic: &'static str, content: &str) {
+            Self::enqueue(topic, content, QualityOfService::QoS0, false, false).await;
+        }
     }
 }
