@@ -40,7 +40,6 @@ use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
 };
 use crate::config::*;
-use crate::mqtt::homeassistant::{send_home_assistant_discovery, send_states};
 use crate::mqtt::MqttReceiveMessage;
 use crate::unicorn::display;
 use crate::unicorn::display::DisplayTextMessage;
@@ -221,8 +220,9 @@ async fn main(spawner: Spawner) {
         ))
         .unwrap();
 
-    send_home_assistant_discovery().await;
-    send_states().await;
+    spawner
+        .spawn(mqtt::homeassistant::hass_discovery_task(app_controller))
+        .unwrap();
 
     app_controller.run().await;
 }

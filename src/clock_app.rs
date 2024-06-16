@@ -60,15 +60,6 @@ impl ClockApp {
         self.send_state().await;
     }
 
-    async fn send_state(&self) {
-        let effect = *self.effect.lock().await;
-        let text = match effect {
-            ClockEffect::Rainbow => "rainbow",
-            ClockEffect::Color => "color",
-        };
-        MqttMessage::enqueue_state("app/clock/state", text).await;
-    }
-
     pub async fn get_date_str(&self) -> String<12> {
         let dt = self.time.now().await;
         let day_title = match dt.weekday() {
@@ -267,6 +258,15 @@ impl UnicornApp for ClockApp {
     async fn process_mqtt_message(&self, message: crate::mqtt::MqttReceiveMessage) {
         let effect = ClockEffect::from_mqtt(&message.body);
         self.set_effect(effect).await;
+    }
+
+    async fn send_state(&self) {
+        let effect = *self.effect.lock().await;
+        let text = match effect {
+            ClockEffect::Rainbow => "rainbow",
+            ClockEffect::Color => "color",
+        };
+        MqttMessage::enqueue_state("app/clock/state", text).await;
     }
 }
 

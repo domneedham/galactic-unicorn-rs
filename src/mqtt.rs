@@ -126,8 +126,8 @@ pub mod clients {
     };
 
     use super::{
-        MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, CLOCK_APP_TOPIC, COLOR_TOPIC, RGB_TOPIC,
-        SEND_CHANNEL, TEXT_TOPIC,
+        homeassistant, MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, CLOCK_APP_TOPIC,
+        COLOR_TOPIC, RGB_TOPIC, SEND_CHANNEL, TEXT_TOPIC,
     };
     use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
 
@@ -260,12 +260,15 @@ pub mod clients {
         let mut clock_app_topic = heapless::String::<64>::new();
         write!(clock_app_topic, "{BASE_MQTT_TOPIC}{CLOCK_APP_TOPIC}").unwrap();
 
-        let topics: Vec<&str, 5> = Vec::from_slice(&[
+        let hass_topic = "homeassistant/status";
+
+        let topics: Vec<&str, 6> = Vec::from_slice(&[
             brightness_topic.as_str(),
             color_topic.as_str(),
             rgb_topic.as_str(),
             text_topic.as_str(),
             clock_app_topic.as_str(),
+            hass_topic,
         ])
         .unwrap();
 
@@ -284,6 +287,8 @@ pub mod clients {
                             display_publisher.publish(message).await;
                         } else if mqtt_message.0.contains("app") {
                             app_publisher.publish(message).await;
+                        } else if mqtt_message.0.contains("homeassistant") {
+                            homeassistant::HASS_RECIEVE_CHANNEL.send(message).await;
                         }
                     }
                     Err(code) => {
@@ -365,12 +370,21 @@ pub mod clients {
 }
 
 pub mod homeassistant {
+    use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+    use embassy_sync::channel::Channel;
+    use embassy_time::Timer;
     use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
+    use crate::app::AppController;
     use crate::display::{send_brightness_state, send_color_state};
     use crate::mqtt::MqttMessage;
 
-    pub async fn send_home_assistant_discovery() {
+    use super::MqttReceiveMessage;
+
+    pub static HASS_RECIEVE_CHANNEL: Channel<ThreadModeRawMutex, MqttReceiveMessage, 2> =
+        Channel::new();
+
+    async fn send_home_assistant_discovery() {
         let topic = "homeassistant/select/galactic_unicorn/config";
         let payload = r#"
 {
@@ -423,14 +437,31 @@ pub mod homeassistant {
         MqttMessage::enqueue_hass(topic, payload).await;
     }
 
-    pub async fn send_states() {
+    async fn send_states(app_controller: &'static AppController) {
         send_brightness_state().await;
         send_color_state().await;
+        app_controller.send_states().await;
     }
 
     impl MqttMessage {
         async fn enqueue_hass(topic: &'static str, content: &str) {
             Self::enqueue(topic, content, QualityOfService::QoS0, false, false).await;
+        }
+    }
+
+    #[embassy_executor::task]
+    pub async fn hass_discovery_task(app_controller: &'static AppController) {
+        send_home_assistant_discovery().await;
+        Timer::after_secs(3).await;
+        send_states(app_controller).await;
+
+        loop {
+            let message = HASS_RECIEVE_CHANNEL.receive().await;
+            if message.topic == "homeassistant/status" {
+                send_home_assistant_discovery().await;
+                Timer::after_secs(1).await;
+                send_states(app_controller).await;
+            }
         }
     }
 }

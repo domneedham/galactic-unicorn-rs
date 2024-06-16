@@ -66,4 +66,6 @@ impl UnicornApp for MqttApp {
     async fn button_press(&self, _: ButtonPress) {}
 
     async fn process_mqtt_message(&self, _: MqttReceiveMessage) {}
+
+    async fn send_state(&self) {}
 }

@@ -35,6 +35,7 @@ pub trait UnicornApp {
     async fn button_press(&self, press: ButtonPress);
 
     async fn process_mqtt_message(&self, message: MqttReceiveMessage);
+    async fn send_state(&self);
 }
 
 pub struct AppController {
@@ -99,6 +100,12 @@ impl AppController {
                 CHANGE_APP.signal(app);
             }
         }
+    }
+
+    pub async fn send_states(&self) {
+        self.clock_app.send_state().await;
+        self.effects_app.send_state().await;
+        self.mqtt_app.send_state().await;
     }
 }
 
