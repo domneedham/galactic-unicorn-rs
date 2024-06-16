@@ -4,12 +4,12 @@ use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
 use heapless::String;
 use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
-pub const BRIGHTNESS_TOPIC: &str = "display/brightness";
-pub const COLOR_TOPIC: &str = "display/color";
-pub const RGB_TOPIC: &str = "display/rgb";
-pub const TEXT_TOPIC: &str = "app/text";
-pub const APP_TOPIC: &str = "app";
-pub const CLOCK_APP_TOPIC: &str = "app/clock";
+pub const BRIGHTNESS_TOPIC: &str = "display/brightness/set";
+pub const COLOR_TOPIC: &str = "display/color/set";
+pub const RGB_TOPIC: &str = "display/rgb/set";
+pub const TEXT_TOPIC: &str = "app/text/set";
+pub const APP_TOPIC: &str = "app/set";
+pub const CLOCK_APP_TOPIC: &str = "app/clock/set";
 
 static SEND_CHANNEL: Channel<ThreadModeRawMutex, &'static mut MqttMessage, 4> = Channel::new();
 
@@ -401,7 +401,7 @@ pub mod homeassistant {
   "uniq_id": "ga_clock_01",
   "~": "galactic_unicorn/app/clock",
   "stat_t": "~/state",
-  "cmd_t": "~",
+  "cmd_t": "~/set",
   "options": ["Rainbow", "Color"]
 }"#
         .trim();
@@ -418,7 +418,7 @@ pub mod homeassistant {
   "uniq_id": "ga_apps_01",
   "~": "galactic_unicorn/app",
   "stat_t": "~/state",
-  "cmd_t": "~",
+  "cmd_t": "~/set",
   "options": ["Clock", "Effects", "Mqtt"]
 }"#
         .trim();
@@ -432,7 +432,7 @@ pub mod homeassistant {
     "ids": "ga_01"
   },
   "name": "Display text",
-  "cmd_t": "galactic_unicorn/app/text",
+  "cmd_t": "galactic_unicorn/app/text/set",
   "uniq_id": "ga_display_text_01"
 }"#
         .trim();
@@ -447,12 +447,12 @@ pub mod homeassistant {
   },
   "name": "Display",
   "~": "galactic_unicorn/display",
-  "cmd_t": "~/brightness",
+  "cmd_t": "~/brightness/set",
   "pl_off": 0,
   "rgb_stat_t": "~/rgb/state",
-  "rgb_cmd_t": "~/rgb",
+  "rgb_cmd_t": "~/rgb/set",
   "bri_stat_t": "~/brightness/state",
-  "bri_cmd_t": "~/brightness",
+  "bri_cmd_t": "~/brightness/set",
   "on_cmd_type": "brightness",
   "uniq_id": "ga_light_01"
 }"#
