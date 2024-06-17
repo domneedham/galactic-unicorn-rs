@@ -21,7 +21,7 @@ static mut MESSAGE_POOL: [MqttMessage; 4] = [
 ];
 
 pub struct MqttMessage {
-    topic: &'static str,
+    topic: String<128>,
     text: String<512>,
     qos: QualityOfService,
     retain: bool,
@@ -32,7 +32,7 @@ pub struct MqttMessage {
 impl MqttMessage {
     const fn new() -> Self {
         MqttMessage {
-            topic: "",
+            topic: String::new(),
             text: String::new(),
             qos: QualityOfService::QoS0,
             retain: false,
@@ -43,7 +43,7 @@ impl MqttMessage {
 
     fn reuse(
         &mut self,
-        topic: &'static str,
+        topic: &str,
         content: &str,
         qos: QualityOfService,
         retain: bool,
@@ -51,7 +51,8 @@ impl MqttMessage {
     ) {
         self.in_use = true;
 
-        self.topic = topic;
+        self.topic.clear();
+        self.topic.push_str(topic).unwrap();
         self.text.clear();
         self.text.push_str(content).unwrap();
         self.qos = qos;
@@ -63,7 +64,7 @@ impl MqttMessage {
         self.in_use = false;
     }
 
-    pub async fn enqueue_state(topic: &'static str, content: &str) {
+    pub async fn enqueue_state(topic: &str, content: &str) {
         Self::enqueue(topic, content, QualityOfService::QoS0, false, true).await;
     }
 
@@ -72,7 +73,7 @@ impl MqttMessage {
     }
 
     pub async fn enqueue(
-        topic: &'static str,
+        topic: &str,
         content: &str,
         qos: QualityOfService,
         retain: bool,
@@ -134,8 +135,8 @@ pub mod clients {
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
-        let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
-        let rx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
+        let tx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
+        let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
 
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(10)));
@@ -173,7 +174,7 @@ pub mod clients {
                     if message.include_base_topic {
                         _ = write!(topic, "{BASE_MQTT_TOPIC}");
                     }
-                    let message_topic = message.topic;
+                    let message_topic = &message.topic;
                     _ = write!(topic, "{message_topic}");
 
                     match client
@@ -205,11 +206,11 @@ pub mod clients {
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
-        display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
-        app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+        display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
+        app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
-        let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
-        let rx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
+        let tx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
+        let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
 
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(30)));
@@ -233,11 +234,11 @@ pub mod clients {
         // config.add_username(USERNAME);
         // config.add_password(PASSWORD);
         config.max_packet_size = 100;
-        let recv_buffer = singleton!(: [u8; 500] = [0; 500]).unwrap();
-        let write_buffer = singleton!(: [u8; 500] = [0; 500]).unwrap();
+        let recv_buffer = singleton!(: [u8; 512] = [0; 512]).unwrap();
+        let write_buffer = singleton!(: [u8; 512] = [0; 512]).unwrap();
 
         let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> =
-            MqttClient::<_, 5, _>::new(socket, write_buffer, 500, recv_buffer, 500, config);
+            MqttClient::<_, 5, _>::new(socket, write_buffer, 512, recv_buffer, 512, config);
 
         match client.connect_to_broker().await {
             Ok(_) => {
@@ -375,14 +376,18 @@ pub mod clients {
 }
 
 pub mod homeassistant {
+    use core::fmt::Write;
+
     use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
     use embassy_sync::channel::Channel;
     use embassy_time::Timer;
+    use heapless::String;
     use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
     use crate::app::AppController;
     use crate::display::{send_brightness_state, send_color_state};
     use crate::mqtt::MqttMessage;
+    use crate::BASE_MQTT_TOPIC;
 
     use super::MqttReceiveMessage;
 
@@ -390,63 +395,94 @@ pub mod homeassistant {
         Channel::new();
 
     async fn send_home_assistant_discovery() {
-        let topic = "homeassistant/select/galactic_unicorn/clock_effect/config";
-        let payload = r#"
-{
-  "dev" : {
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "homeassistant/select/{BASE_MQTT_TOPIC}clock_effect/config"
+        )
+        .unwrap();
+        let mut payload = String::<400>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
     "name": "Galactic Unicorn",
     "ids": "ga_01"
-  },
+  }},
   "name": "Clock effect",
   "uniq_id": "ga_clock_01",
-  "~": "galactic_unicorn/app/clock",
+  "~": "{BASE_MQTT_TOPIC}app/clock",
   "stat_t": "~/state",
   "cmd_t": "~/set",
   "options": ["Rainbow", "Color"]
-}"#
-        .trim();
-        MqttMessage::enqueue_hass(topic, payload).await;
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
 
-        let topic = "homeassistant/select/galactic_unicorn/active_app/config";
-        let payload = r#"
-{
-  "dev" : {
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "homeassistant/select/{BASE_MQTT_TOPIC}active_app/config"
+        )
+        .unwrap();
+        let mut payload = String::<256>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
     "name": "Galactic Unicorn",
     "ids": "ga_01"
-  },
+  }},
   "name": "Active app",
   "uniq_id": "ga_apps_01",
-  "~": "galactic_unicorn/app",
+  "~": "{BASE_MQTT_TOPIC}app",
   "stat_t": "~/state",
   "cmd_t": "~/set",
   "options": ["Clock", "Effects", "Mqtt"]
-}"#
-        .trim();
-        MqttMessage::enqueue_hass(topic, payload).await;
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
 
-        let topic = "homeassistant/notify/galactic_unicorn/mqtt_message/config";
-        let payload = r#"
-{
-  "dev" : {
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "homeassistant/notify/{BASE_MQTT_TOPIC}mqtt_message/config"
+        )
+        .unwrap();
+        let mut payload = String::<256>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
     "name": "Galactic Unicorn",
     "ids": "ga_01"
-  },
+  }},
   "name": "Display text",
-  "cmd_t": "galactic_unicorn/app/text/set",
+  "cmd_t": "{BASE_MQTT_TOPIC}app/text/set",
   "uniq_id": "ga_display_text_01"
-}"#
-        .trim();
-        MqttMessage::enqueue_hass(topic, payload).await;
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
 
-        let topic = "homeassistant/light/galactic_unicorn/board/config";
-        let payload = r#"
-{
-  "dev" : {
+        let mut topic = String::<64>::new();
+        write!(topic, "homeassistant/light/{BASE_MQTT_TOPIC}board/config").unwrap();
+        let mut payload = String::<512>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
     "name": "Galactic Unicorn",
     "ids": "ga_01"
-  },
+  }},
   "name": "Display",
-  "~": "galactic_unicorn/display",
+  "~": "{BASE_MQTT_TOPIC}display",
   "cmd_t": "~/brightness/set",
   "pl_off": 0,
   "rgb_stat_t": "~/rgb/state",
@@ -455,9 +491,10 @@ pub mod homeassistant {
   "bri_cmd_t": "~/brightness/set",
   "on_cmd_type": "brightness",
   "uniq_id": "ga_light_01"
-}"#
-        .trim();
-        MqttMessage::enqueue_hass(topic, payload).await;
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
     }
 
     async fn send_states(app_controller: &'static AppController) {
@@ -467,7 +504,7 @@ pub mod homeassistant {
     }
 
     impl MqttMessage {
-        async fn enqueue_hass(topic: &'static str, content: &str) {
+        async fn enqueue_hass(topic: &str, content: &str) {
             Self::enqueue(topic, content, QualityOfService::QoS0, false, false).await;
         }
     }

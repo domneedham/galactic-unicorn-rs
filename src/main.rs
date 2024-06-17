@@ -188,10 +188,10 @@ async fn main(spawner: Spawner) {
         spawner
     ));
 
-    static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1> =
+    static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
 
-    static MQTT_APP_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1> =
+    static MQTT_APP_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
 
     // mqtt clients

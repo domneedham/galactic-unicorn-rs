@@ -591,7 +591,7 @@ pub mod display {
 
     #[embassy_executor::task]
     pub async fn process_mqtt_messages_task(
-        mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+        mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
         loop {
             let message = subscriber.next_message_pure().await;
