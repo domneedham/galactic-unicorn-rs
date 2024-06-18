@@ -32,11 +32,13 @@ impl Time {
 pub mod ntp {
     use chrono::DateTime;
     use chrono_tz::{Tz, GB};
+    use embassy_futures::select::select;
     use embassy_net::{
         dns::DnsQueryType,
         udp::{PacketMetadata, UdpSocket},
         IpEndpoint, Stack,
     };
+    use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
     use embassy_time::Timer;
     use no_std_net::{SocketAddr, ToSocketAddrs};
     use sntpc::{
@@ -48,6 +50,8 @@ pub mod ntp {
     use super::Time;
 
     const POOL_NTP_ADDR: &str = "pool.ntp.org";
+
+    pub static SYNC_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
     #[derive(Error, Debug)]
     pub enum SntpcError {
@@ -172,7 +176,9 @@ pub mod ntp {
                 Err(_) => 10,
                 Ok(_) => 3600,
             };
-            Timer::after_secs(sleep_sec).await;
+
+            select(Timer::after_secs(sleep_sec), SYNC_SIGNAL.wait()).await;
+            SYNC_SIGNAL.reset();
         }
     }
 

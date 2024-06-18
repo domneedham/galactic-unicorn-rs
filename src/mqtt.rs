@@ -1,53 +1,102 @@
-use core::{
-    fmt::Write,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::fmt::Write;
 
 use embassy_sync::{
-    blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex, signal::Signal,
+    blocking_mutex::raw::ThreadModeRawMutex,
+    channel::Channel,
+    mutex::{Mutex, MutexGuard},
 };
-use embassy_time::Duration;
+use embassy_time::Timer;
 use heapless::String;
 use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
-use crate::{app::UnicornApp, buttons::ButtonPress, unicorn::display::DisplayTextMessage};
+pub const BRIGHTNESS_TOPIC: &str = "display/brightness/set";
+pub const RGB_TOPIC: &str = "display/rgb/set";
+pub const TEXT_TOPIC: &str = "app/text/set";
+pub const APP_TOPIC: &str = "app/set";
+pub const CLOCK_APP_TOPIC: &str = "app/clock/set";
+pub const NTP_SYNC_TOPIC: &str = "system/ntp/sync";
 
-static SEND_CHANNEL: Channel<ThreadModeRawMutex, MqttMessage, 16> = Channel::new();
+static SEND_CHANNEL: Channel<ThreadModeRawMutex, MutexGuard<ThreadModeRawMutex, MqttMessage>, 4> =
+    Channel::new();
 
-#[derive(Clone)]
-pub struct DisplayTopics {
-    pub display_topic: String<64>,
-    pub display_interrupt_topic: String<64>,
-    pub brightness_topic: String<64>,
-    pub color_topic: String<64>,
+static MESSAGE_POOL: [Mutex<ThreadModeRawMutex, MqttMessage>; 4] = [
+    Mutex::new(MqttMessage::new()),
+    Mutex::new(MqttMessage::new()),
+    Mutex::new(MqttMessage::new()),
+    Mutex::new(MqttMessage::new()),
+];
+
+pub struct MqttMessage {
+    topic: String<128>,
+    text: String<512>,
+    qos: QualityOfService,
+    retain: bool,
+    include_base_topic: bool,
 }
 
-#[derive(Clone)]
-pub struct AppTopics {
-    pub clock_app_topic: String<64>,
-}
-
-pub struct MqttMessage<'a> {
-    pub topic: &'a str,
-    pub text: &'a str,
-    pub qos: QualityOfService,
-    pub retain: bool,
-}
-
-impl<'a> MqttMessage<'a> {
-    pub fn debug(text: &'a str) -> Self {
-        Self {
-            topic: "debug",
-            text,
+impl MqttMessage {
+    const fn new() -> Self {
+        MqttMessage {
+            topic: String::new(),
+            text: String::new(),
             qos: QualityOfService::QoS0,
             retain: false,
+            include_base_topic: false,
         }
     }
-}
 
-impl MqttMessage<'static> {
-    pub async fn send(self) {
-        SEND_CHANNEL.send(self).await;
+    fn reuse(
+        &mut self,
+        topic: &str,
+        content: &str,
+        qos: QualityOfService,
+        retain: bool,
+        include_base_topic: bool,
+    ) {
+        self.topic.clear();
+        self.topic.push_str(topic).unwrap();
+        self.text.clear();
+        self.text.push_str(content).unwrap();
+        self.qos = qos;
+        self.retain = retain;
+        self.include_base_topic = include_base_topic;
+    }
+
+    pub async fn enqueue_state(topic: &str, content: &str) {
+        Self::enqueue(topic, content, QualityOfService::QoS0, false, true).await;
+    }
+
+    pub async fn enqueue_debug(content: &str) {
+        Self::enqueue("debug", content, QualityOfService::QoS0, false, true).await;
+    }
+
+    pub async fn enqueue(
+        topic: &str,
+        content: &str,
+        qos: QualityOfService,
+        retain: bool,
+        include_base_topic: bool,
+    ) {
+        let mut queued = false;
+        while !queued {
+            for msg_mutex in &MESSAGE_POOL {
+                let msg_lock = msg_mutex.try_lock();
+                match msg_lock {
+                    Ok(mut message) => {
+                        message.reuse(topic, content, qos, retain, include_base_topic);
+
+                        SEND_CHANNEL.send(message).await;
+                        queued = true;
+                        break;
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            if !queued {
+                Timer::after_millis(25).await;
+            }
+        }
     }
 }
 
@@ -73,65 +122,6 @@ impl MqttReceiveMessage {
     }
 }
 
-pub struct MqttApp {
-    pub last_message: Mutex<ThreadModeRawMutex, Option<String<64>>>,
-    pub update_message: Signal<ThreadModeRawMutex, bool>,
-    pub is_active: AtomicBool,
-}
-
-impl MqttApp {
-    pub fn new() -> Self {
-        Self {
-            last_message: Mutex::new(None),
-            update_message: Signal::new(),
-            is_active: AtomicBool::new(false),
-        }
-    }
-
-    pub async fn set_last_message(&self, message: String<64>) {
-        self.last_message.lock().await.replace(message);
-        self.update_message.signal(true);
-    }
-}
-
-impl UnicornApp for MqttApp {
-    async fn display(&self) {
-        loop {
-            match self.last_message.lock().await.as_ref() {
-                Some(val) => {
-                    DisplayTextMessage::from_app(&val, None, None, Some(Duration::from_secs(1)))
-                        .send_and_replace_queue()
-                        .await
-                }
-                None => {
-                    DisplayTextMessage::from_app(
-                        "No message!",
-                        None,
-                        None,
-                        Some(Duration::from_secs(1)),
-                    )
-                    .send_and_replace_queue()
-                    .await
-                }
-            };
-
-            self.update_message.wait().await;
-        }
-    }
-
-    async fn start(&self) {
-        self.is_active.store(true, Ordering::Relaxed);
-    }
-
-    async fn stop(&self) {
-        self.is_active.store(false, Ordering::Relaxed);
-    }
-
-    async fn button_press(&self, _: ButtonPress) {}
-
-    async fn process_mqtt_message(&self, _: MqttReceiveMessage) {}
-}
-
 pub mod clients {
     use core::fmt::Write;
 
@@ -140,19 +130,23 @@ pub mod clients {
     use embassy_net::{tcp::TcpSocket, Stack};
     use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, pubsub::Publisher};
     use embassy_time::{Duration, Timer};
+    use heapless::Vec;
     use rust_mqtt::{
         client::{client::MqttClient, client_config::ClientConfig},
         packet::v5::reason_codes::ReasonCode,
         utils::rng_generator::CountingRng,
     };
 
-    use super::{AppTopics, DisplayTopics, MqttMessage, MqttReceiveMessage, SEND_CHANNEL};
-    use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
+    use super::{
+        homeassistant, MqttMessage, MqttReceiveMessage, APP_TOPIC, BRIGHTNESS_TOPIC,
+        CLOCK_APP_TOPIC, NTP_SYNC_TOPIC, RGB_TOPIC, SEND_CHANNEL, TEXT_TOPIC,
+    };
+    use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC, HASS_BASE_MQTT_TOPIC};
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
-        let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
-        let rx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
+        let tx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
+        let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
 
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(10)));
@@ -167,13 +161,19 @@ pub mod clients {
         config.add_client_id("client");
         // config.add_username(USERNAME);
         // config.add_password(PASSWORD);
-        config.max_packet_size = 100;
+        config.max_packet_size = 600;
 
-        let mut recv_buffer = [0; 80];
-        let mut write_buffer = [0; 80];
+        let mut recv_buffer = [0; 512];
+        let mut write_buffer = [0; 512];
 
-        let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> =
-            MqttClient::<_, 5, _>::new(socket, &mut write_buffer, 80, &mut recv_buffer, 80, config);
+        let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> = MqttClient::<_, 5, _>::new(
+            socket,
+            &mut write_buffer,
+            512,
+            &mut recv_buffer,
+            512,
+            config,
+        );
 
         client.connect_to_broker().await.unwrap();
 
@@ -181,18 +181,28 @@ pub mod clients {
             match select(SEND_CHANNEL.receive(), Timer::after_secs(5)).await {
                 Either::First(message) => {
                     let mut topic = heapless::String::<256>::new();
-                    _ = write!(topic, "{BASE_MQTT_TOPIC}");
-                    let message_topic = message.topic;
+                    if message.include_base_topic {
+                        _ = write!(topic, "{BASE_MQTT_TOPIC}/");
+                    }
+                    let message_topic = &message.topic;
                     _ = write!(topic, "{message_topic}");
 
-                    let _ = client
+                    match client
                         .send_message(
                             topic.as_str(),
                             message.text.as_bytes(),
                             message.qos,
                             message.retain,
                         )
-                        .await;
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(x) => {
+                            MqttMessage::enqueue_debug(get_reason_code(x)).await;
+                        }
+                    }
+
+                    drop(message);
                 }
                 Either::Second(_) => match client.send_ping().await {
                     Ok(_) => {}
@@ -205,13 +215,12 @@ pub mod clients {
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
-        display_topics: DisplayTopics,
-        display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
-        app_topics: AppTopics,
-        app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+        display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
+        app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
+        system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
-        let tx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
-        let rx_buffer = singleton!(: [u8; 4096] = [0; 4096]).unwrap();
+        let tx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
+        let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
 
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(30)));
@@ -235,80 +244,70 @@ pub mod clients {
         // config.add_username(USERNAME);
         // config.add_password(PASSWORD);
         config.max_packet_size = 100;
-        let recv_buffer = singleton!(: [u8; 500] = [0; 500]).unwrap();
-        let write_buffer = singleton!(: [u8; 500] = [0; 500]).unwrap();
+        let recv_buffer = singleton!(: [u8; 512] = [0; 512]).unwrap();
+        let write_buffer = singleton!(: [u8; 512] = [0; 512]).unwrap();
 
         let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> =
-            MqttClient::<_, 5, _>::new(socket, write_buffer, 500, recv_buffer, 500, config);
+            MqttClient::<_, 5, _>::new(socket, write_buffer, 512, recv_buffer, 512, config);
 
         match client.connect_to_broker().await {
             Ok(_) => {
-                MqttMessage::debug("Connected to receiver broker")
-                    .send()
-                    .await
+                MqttMessage::enqueue_debug("Connected to receiver broker").await;
             }
             Err(code) => send_reason_code(code).await,
         };
 
-        match client
-            .subscribe_to_topic(&display_topics.display_topic)
-            .await
-        {
-            Ok(_) => {
-                MqttMessage::debug("Subscribed to display topic")
-                    .send()
-                    .await
-            }
-            Err(code) => send_reason_code(code).await,
-        }
+        let mut brightness_topic = heapless::String::<64>::new();
+        write!(brightness_topic, "{BASE_MQTT_TOPIC}/{BRIGHTNESS_TOPIC}").unwrap();
 
-        match client
-            .subscribe_to_topic(&display_topics.display_interrupt_topic)
-            .await
-        {
-            Ok(_) => {
-                MqttMessage::debug("Subscribed to display interrupt topic")
-                    .send()
-                    .await
-            }
-            Err(code) => send_reason_code(code).await,
-        }
+        let mut rgb_topic = heapless::String::<64>::new();
+        write!(rgb_topic, "{BASE_MQTT_TOPIC}/{RGB_TOPIC}").unwrap();
 
-        match client
-            .subscribe_to_topic(&display_topics.brightness_topic)
-            .await
-        {
-            Ok(_) => {
-                MqttMessage::debug("Subscribed to brightness topic")
-                    .send()
-                    .await
-            }
-            Err(code) => send_reason_code(code).await,
-        }
+        let mut text_topic = heapless::String::<64>::new();
+        write!(text_topic, "{BASE_MQTT_TOPIC}/{TEXT_TOPIC}").unwrap();
 
-        match client.subscribe_to_topic(&display_topics.color_topic).await {
-            Ok(_) => MqttMessage::debug("Subscribed to color topic").send().await,
-            Err(code) => send_reason_code(code).await,
-        }
+        let mut app_topic = heapless::String::<64>::new();
+        write!(app_topic, "{BASE_MQTT_TOPIC}/{APP_TOPIC}").unwrap();
 
-        match client.subscribe_to_topic(&app_topics.clock_app_topic).await {
-            Ok(_) => {
-                MqttMessage::debug("Subscribed to clock app topic")
-                    .send()
-                    .await
-            }
+        let mut clock_app_topic = heapless::String::<64>::new();
+        write!(clock_app_topic, "{BASE_MQTT_TOPIC}/{CLOCK_APP_TOPIC}").unwrap();
+
+        let mut ntp_sync_topic = heapless::String::<64>::new();
+        write!(ntp_sync_topic, "{BASE_MQTT_TOPIC}/{NTP_SYNC_TOPIC}").unwrap();
+
+        let mut hass_topic = heapless::String::<64>::new();
+        write!(hass_topic, "{HASS_BASE_MQTT_TOPIC}/status").unwrap();
+
+        let topics: Vec<&str, 7> = Vec::from_slice(&[
+            brightness_topic.as_str(),
+            rgb_topic.as_str(),
+            text_topic.as_str(),
+            app_topic.as_str(),
+            clock_app_topic.as_str(),
+            ntp_sync_topic.as_str(),
+            hass_topic.as_str(),
+        ])
+        .unwrap();
+
+        match client.subscribe_to_topics(&topics).await {
+            Ok(_) => MqttMessage::enqueue_debug("Subscribed to topics").await,
             Err(code) => send_reason_code(code).await,
-        }
+        };
 
         loop {
             match select(client.receive_message(), Timer::after_secs(5)).await {
                 Either::First(received_message) => match received_message {
                     Ok(mqtt_message) => {
                         let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
+
                         if mqtt_message.0.contains("display") {
                             display_publisher.publish(message).await;
                         } else if mqtt_message.0.contains("app") {
                             app_publisher.publish(message).await;
+                        } else if mqtt_message.0.contains("system") {
+                            system_publisher.publish(message).await;
+                        } else if mqtt_message.0.contains(HASS_BASE_MQTT_TOPIC) {
+                            homeassistant::HASS_RECIEVE_CHANNEL.send(message).await;
                         }
                     }
                     Err(code) => {
@@ -378,7 +377,7 @@ pub mod clients {
 
     async fn send_reason_code(code: ReasonCode) {
         let message = get_reason_code(code);
-        MqttMessage::debug(message).send().await;
+        MqttMessage::enqueue_debug(message).await;
     }
 
     async fn show_reason_code(code: ReasonCode) {
@@ -386,5 +385,181 @@ pub mod clients {
         DisplayTextMessage::from_system(text, None, None)
             .send_and_replace_queue()
             .await;
+    }
+}
+
+pub mod homeassistant {
+    use core::fmt::Write;
+
+    use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+    use embassy_sync::channel::Channel;
+    use embassy_time::Timer;
+    use heapless::String;
+    use rust_mqtt::packet::v5::publish_packet::QualityOfService;
+
+    use crate::app::AppController;
+    use crate::display::{send_brightness_state, send_color_state};
+    use crate::mqtt::MqttMessage;
+    use crate::{BASE_MQTT_TOPIC, DEVICE_ID, HASS_BASE_MQTT_TOPIC};
+
+    use super::MqttReceiveMessage;
+
+    pub static HASS_RECIEVE_CHANNEL: Channel<ThreadModeRawMutex, MqttReceiveMessage, 2> =
+        Channel::new();
+
+    async fn send_home_assistant_discovery() {
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "{HASS_BASE_MQTT_TOPIC}/select/{DEVICE_ID}/clock_effect/config"
+        )
+        .unwrap();
+        let mut payload = String::<512>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
+    "ids": "{DEVICE_ID}",
+    "name": "Galactic Unicorn",
+    "manufacturer": "Pimoroni",
+    "model": "Galactic Unicorn"
+  }},
+  "name": "Clock effect",
+  "~": "{BASE_MQTT_TOPIC}/app/clock",
+  "stat_t": "~/state",
+  "cmd_t": "~/set",
+  "options": ["Rainbow", "Color"],
+  "uniq_id": "{DEVICE_ID}_clock_01"
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "{HASS_BASE_MQTT_TOPIC}/select/{DEVICE_ID}/active_app/config"
+        )
+        .unwrap();
+        let mut payload = String::<256>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
+    "ids": "{DEVICE_ID}"
+  }},
+  "name": "Active app",
+  "~": "{BASE_MQTT_TOPIC}/app",
+  "stat_t": "~/state",
+  "cmd_t": "~/set",
+  "options": ["Clock", "Effects", "Mqtt"],
+  "uniq_id": "{DEVICE_ID}_apps_01"
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "{HASS_BASE_MQTT_TOPIC}/notify/{DEVICE_ID}/mqtt_message/config"
+        )
+        .unwrap();
+        let mut payload = String::<256>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
+    "ids": "{DEVICE_ID}"
+  }},
+  "name": "Display text",
+  "cmd_t": "{BASE_MQTT_TOPIC}/app/text/set",
+  "uniq_id": "{DEVICE_ID}_display_text_01"
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "{HASS_BASE_MQTT_TOPIC}/light/{DEVICE_ID}/board/config"
+        )
+        .unwrap();
+        let mut payload = String::<512>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
+    "ids": "{DEVICE_ID}"
+  }},
+  "name": "Display",
+  "~": "{BASE_MQTT_TOPIC}/display",
+  "cmd_t": "~/brightness/set",
+  "pl_off": 0,
+  "rgb_stat_t": "~/rgb/state",
+  "rgb_cmd_t": "~/rgb/set",
+  "bri_stat_t": "~/brightness/state",
+  "bri_cmd_t": "~/brightness/set",
+  "on_cmd_type": "brightness",
+  "uniq_id": "{DEVICE_ID}_light_01"
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "{HASS_BASE_MQTT_TOPIC}/button/{DEVICE_ID}/ntp_sync/config"
+        )
+        .unwrap();
+        let mut payload = String::<256>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
+    "ids": "{DEVICE_ID}"
+  }},
+  "name": "NTP Sync",
+  "cmd_t": "{BASE_MQTT_TOPIC}/system/ntp/sync",
+  "uniq_id": "{DEVICE_ID}_button_01"
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+    }
+
+    async fn send_states(app_controller: &'static AppController) {
+        send_brightness_state().await;
+        send_color_state().await;
+        app_controller.send_states().await;
+    }
+
+    impl MqttMessage {
+        async fn enqueue_hass(topic: &str, content: &str) {
+            Self::enqueue(topic, content, QualityOfService::QoS0, false, false).await;
+        }
+    }
+
+    #[embassy_executor::task]
+    pub async fn hass_discovery_task(app_controller: &'static AppController) {
+        send_home_assistant_discovery().await;
+        Timer::after_secs(3).await;
+        send_states(app_controller).await;
+
+        loop {
+            let message = HASS_RECIEVE_CHANNEL.receive().await;
+            if message.topic.ends_with("/status") {
+                send_home_assistant_discovery().await;
+                Timer::after_secs(1).await;
+                send_states(app_controller).await;
+            }
+        }
     }
 }

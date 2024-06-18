@@ -2,20 +2,16 @@ use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use galactic_unicorn_embassy::{pins::UnicornDisplayPins, GalacticUnicorn};
 
-use crate::mqtt::MqttMessage;
-
 type GalacticUnicornType = Mutex<ThreadModeRawMutex, Option<GalacticUnicorn>>;
 static GALACTIC_UNICORN: GalacticUnicornType = Mutex::new(None);
 
 pub async fn init(pio: PIO0, dma: DMA_CH0, pins: UnicornDisplayPins) {
     let gu = GalacticUnicorn::new(pio, pins, dma);
     GALACTIC_UNICORN.lock().await.replace(gu);
-    MqttMessage::debug("Initialised display").send().await;
 }
 
 pub mod display {
-    use core::sync::atomic::Ordering;
-
+    use core::fmt::Write;
     use embassy_futures::select::{select, Either};
     use embassy_sync::{
         blocking_mutex::raw::ThreadModeRawMutex,
@@ -27,6 +23,7 @@ pub mod display {
     use embassy_time::{Duration, Instant, Timer};
     use embedded_graphics::{
         mono_font::{ascii::FONT_6X10, MonoTextStyle},
+        pixelcolor::RgbColor,
         text::{Alignment, Baseline, Text},
     };
     use embedded_graphics_core::{
@@ -40,8 +37,7 @@ pub mod display {
 
     use crate::{
         buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
-        graphics::colors::Rgb888Str,
-        mqtt::{DisplayTopics, MqttApp, MqttReceiveMessage},
+        mqtt::{MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, RGB_TOPIC},
     };
 
     use super::GALACTIC_UNICORN;
@@ -321,6 +317,17 @@ pub mod display {
             .set_brightness(brightness);
 
         redraw_graphics().await;
+
+        send_brightness_state().await;
+    }
+
+    pub async fn send_brightness_state() {
+        let brightness = GALACTIC_UNICORN.lock().await.as_ref().unwrap().brightness;
+
+        let mut text = String::<3>::new();
+        write!(text, "{brightness}").unwrap();
+
+        MqttMessage::enqueue_state("display/brightness/state", &text).await;
     }
 
     pub async fn set_color(color: Rgb888) {
@@ -338,6 +345,20 @@ pub mod display {
             .publisher()
             .unwrap()
             .publish_immediate(color);
+
+        send_color_state().await;
+    }
+
+    pub async fn send_color_state() {
+        let color = *CURRENT_COLOR.lock().await;
+        let r = color.r();
+        let g = color.g();
+        let b = color.b();
+
+        let mut text = String::<11>::new();
+        write!(text, "{r},{g},{b}").unwrap();
+
+        MqttMessage::enqueue_state("display/rgb/state", &text).await;
     }
 
     async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
@@ -569,39 +590,62 @@ pub mod display {
 
     #[embassy_executor::task]
     pub async fn process_mqtt_messages_task(
-        topics: DisplayTopics,
-        mqtt_app: &'static MqttApp,
-        mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+        mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
         loop {
             let message = subscriber.next_message_pure().await;
 
-            if &message.topic == &topics.display_topic {
-                let display_message = DisplayTextMessage::from_mqtt(&message.body, None, None);
-                if mqtt_app.is_active.load(Ordering::Relaxed) {
-                    display_message.send_and_show_now().await;
-                } else {
-                    display_message.send().await;
-                }
-
-                mqtt_app.set_last_message(message.body).await;
-            } else if &message.topic == &topics.display_interrupt_topic {
-                DisplayTextMessage::from_mqtt(&message.body, None, None)
-                    .send_and_show_now()
-                    .await;
-            } else if &message.topic == &topics.brightness_topic {
+            if message.topic.contains(BRIGHTNESS_TOPIC) {
                 let brightness: u8 = match message.body.parse() {
                     Ok(value) => value,
                     Err(_) => 255,
                 };
                 set_brightness(brightness).await;
-            } else if &message.topic == &topics.color_topic {
-                match Rgb888::from_str(&message.body) {
-                    Some(color) => {
-                        set_color(color).await;
+            } else if message.topic.contains(RGB_TOPIC) {
+                let mut r = String::<3>::new();
+                let mut g = String::<3>::new();
+                let mut b = String::<3>::new();
+
+                let mut r_compl = false;
+                let mut g_compl = false;
+                let mut b_compl = false;
+                for c in message.body.chars() {
+                    if !r_compl {
+                        if c == ',' {
+                            r_compl = true;
+                        } else {
+                            write!(r, "{c}").unwrap();
+                        }
+
+                        continue;
                     }
-                    None => {}
-                };
+
+                    if !g_compl {
+                        if c == ',' {
+                            g_compl = true;
+                        } else {
+                            write!(g, "{c}").unwrap();
+                        }
+
+                        continue;
+                    }
+
+                    if !b_compl {
+                        if c == ',' {
+                            b_compl = true;
+                        } else {
+                            write!(b, "{c}").unwrap();
+                        }
+
+                        continue;
+                    }
+                }
+
+                let r = r.parse::<u8>().unwrap_or_default();
+                let g = g.parse::<u8>().unwrap_or_default();
+                let b = b.parse::<u8>().unwrap_or_default();
+
+                set_color(Rgb888::new(r, g, b)).await;
             }
         }
     }

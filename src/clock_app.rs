@@ -1,5 +1,5 @@
 use chrono::{Datelike, Timelike, Weekday};
-use core::fmt::Write;
+use core::{fmt::Write, str::FromStr};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::Timer;
 use embedded_graphics::{
@@ -13,12 +13,14 @@ use embedded_graphics_core::Drawable;
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use heapless::{String, Vec};
 use micromath::F32Ext as _; // needed for rem_euclid, floor, abs and round
+use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
 use crate::{
     app::UnicornApp,
     buttons::ButtonPress,
     fonts,
+    mqtt::MqttMessage,
     time::Time,
     unicorn::{
         self,
@@ -26,19 +28,11 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, EnumString, IntoStaticStr)]
+#[strum(ascii_case_insensitive)]
 pub enum ClockEffect {
     Rainbow,
-    None,
-}
-
-impl ClockEffect {
-    pub fn from_mqtt(message: &str) -> ClockEffect {
-        match message {
-            "rainbow" => ClockEffect::Rainbow,
-            _ => ClockEffect::None,
-        }
-    }
+    Color,
 }
 
 pub struct ClockApp {
@@ -50,12 +44,13 @@ impl ClockApp {
     pub fn new(time: &'static Time) -> Self {
         Self {
             time,
-            effect: Mutex::new(ClockEffect::None),
+            effect: Mutex::new(ClockEffect::Color),
         }
     }
 
     pub async fn set_effect(&self, effect: ClockEffect) {
         *self.effect.lock().await = effect;
+        self.send_state().await;
     }
 
     pub async fn get_date_str(&self) -> String<12> {
@@ -218,7 +213,7 @@ impl UnicornApp for ClockApp {
                         Timer::after(duration).await;
                     }
                 }
-                ClockEffect::None => {
+                ClockEffect::Color => {
                     let duration = embassy_time::Duration::from_millis(250);
                     DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
                         .send_and_replace_queue()
@@ -247,13 +242,27 @@ impl UnicornApp for ClockApp {
                 .await;
             }
             ButtonPress::Long => {}
-            ButtonPress::Double => {}
+            ButtonPress::Double => {
+                let current = *self.effect.lock().await;
+                let new = match current {
+                    ClockEffect::Color => ClockEffect::Rainbow,
+                    ClockEffect::Rainbow => ClockEffect::Color,
+                };
+                self.set_effect(new).await;
+            }
         }
     }
 
     async fn process_mqtt_message(&self, message: crate::mqtt::MqttReceiveMessage) {
-        let effect = ClockEffect::from_mqtt(&message.body);
-        self.set_effect(effect).await;
+        if let Ok(effect) = ClockEffect::from_str(&message.body) {
+            self.set_effect(effect).await;
+        }
+    }
+
+    async fn send_state(&self) {
+        let effect = *self.effect.lock().await;
+        let text = effect.into();
+        MqttMessage::enqueue_state("app/clock/state", text).await;
     }
 }
 

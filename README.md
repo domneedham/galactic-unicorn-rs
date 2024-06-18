@@ -3,4 +3,7 @@
 ## Planned Features
 
 - [x] Generic clock
-- [ ] MQTT enabled
+- [x] MQTT enabled
+- [x] Home assistant discovery
+- [ ] Network resiliency
+- [ ] Good documentation

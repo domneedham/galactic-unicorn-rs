@@ -1,3 +1,5 @@
+use core::str::FromStr;
+
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, Either3};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -7,18 +9,21 @@ use embassy_sync::signal::Signal;
 use embassy_time::Duration;
 
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
+use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
 use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
 use crate::clock_app::ClockApp;
 use crate::effects_app::EffectsApp;
-use crate::mqtt::{AppTopics, MqttApp, MqttReceiveMessage};
+use crate::mqtt::{MqttMessage, MqttReceiveMessage, APP_TOPIC, CLOCK_APP_TOPIC, TEXT_TOPIC};
+use crate::mqtt_app::MqttApp;
 use crate::unicorn;
-use crate::unicorn::display::DisplayGraphicsMessage;
+use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
 
 static CHANGE_APP: Signal<ThreadModeRawMutex, Apps> = Signal::new();
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, EnumString, IntoStaticStr)]
+#[strum(ascii_case_insensitive)]
 enum Apps {
     Clock,
     Effects,
@@ -34,6 +39,7 @@ pub trait UnicornApp {
     async fn button_press(&self, press: ButtonPress);
 
     async fn process_mqtt_message(&self, message: MqttReceiveMessage);
+    async fn send_state(&self);
 }
 
 pub struct AppController {
@@ -75,44 +81,75 @@ impl AppController {
                 Either3::Third(press) => (Apps::Mqtt, press),
             };
 
-            let current_app = *self.active_app.lock().await;
             if app == *self.active_app.lock().await {
+                let current_app = *self.active_app.lock().await;
+
                 match current_app {
                     Apps::Clock => self.clock_app.button_press(press).await,
                     Apps::Effects => self.effects_app.button_press(press).await,
                     Apps::Mqtt => self.mqtt_app.button_press(press).await,
                 }
             } else {
-                match current_app {
-                    Apps::Clock => self.clock_app.stop().await,
-                    Apps::Effects => self.effects_app.stop().await,
-                    Apps::Mqtt => self.mqtt_app.stop().await,
-                };
-
-                *self.active_app.lock().await = app;
-                match app {
-                    Apps::Clock => self.clock_app.start().await,
-                    Apps::Effects => self.effects_app.start().await,
-                    Apps::Mqtt => self.mqtt_app.start().await,
-                };
-                CHANGE_APP.signal(app);
+                self.change_app(app).await;
             }
+
+            self.send_states().await;
         }
+    }
+
+    pub async fn send_states(&self) {
+        let active_app = *self.active_app.lock().await;
+        let app_text = active_app.into();
+        MqttMessage::enqueue_state("app/state", app_text).await;
+
+        self.clock_app.send_state().await;
+        self.effects_app.send_state().await;
+        self.mqtt_app.send_state().await;
+    }
+
+    async fn change_app(&self, new_app: Apps) {
+        let current_app = *self.active_app.lock().await;
+
+        match current_app {
+            Apps::Clock => self.clock_app.stop().await,
+            Apps::Effects => self.effects_app.stop().await,
+            Apps::Mqtt => self.mqtt_app.stop().await,
+        };
+
+        *self.active_app.lock().await = new_app;
+        match new_app {
+            Apps::Clock => self.clock_app.start().await,
+            Apps::Effects => self.effects_app.start().await,
+            Apps::Mqtt => self.mqtt_app.start().await,
+        };
+        CHANGE_APP.signal(new_app);
     }
 }
 
 #[embassy_executor::task]
 pub async fn process_mqtt_messages_task(
-    topics: AppTopics,
     app_controller: &'static AppController,
-    mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 16, 1, 1>,
+    mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
 ) {
     loop {
         let message = subscriber.next_message_pure().await;
 
-        if &message.topic == &topics.clock_app_topic {
-            app_controller.clock_app.process_mqtt_message(message).await
+        if message.topic.contains(TEXT_TOPIC) {
+            DisplayTextMessage::from_mqtt(&message.body, None, None)
+                .send()
+                .await;
+            app_controller.mqtt_app.set_last_message(message.body).await;
+        } else if message.topic.contains(CLOCK_APP_TOPIC) {
+            app_controller.clock_app.process_mqtt_message(message).await;
+
+        // process this last
+        } else if message.topic.contains(APP_TOPIC) {
+            if let Ok(new_app) = Apps::from_str(&message.body) {
+                app_controller.change_app(new_app).await;
+            }
         }
+
+        app_controller.send_states().await;
     }
 }
 
