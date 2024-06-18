@@ -37,8 +37,7 @@ pub mod display {
 
     use crate::{
         buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
-        graphics::colors::Rgb888Str,
-        mqtt::{MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, COLOR_TOPIC, RGB_TOPIC},
+        mqtt::{MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, RGB_TOPIC},
     };
 
     use super::GALACTIC_UNICORN;
@@ -602,13 +601,6 @@ pub mod display {
                     Err(_) => 255,
                 };
                 set_brightness(brightness).await;
-            } else if message.topic.contains(COLOR_TOPIC) {
-                match Rgb888::from_str(&message.body) {
-                    Some(color) => {
-                        set_color(color).await;
-                    }
-                    None => {}
-                };
             } else if message.topic.contains(RGB_TOPIC) {
                 let mut r = String::<3>::new();
                 let mut g = String::<3>::new();
