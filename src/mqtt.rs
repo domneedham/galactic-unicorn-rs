@@ -15,6 +15,7 @@ pub const RGB_TOPIC: &str = "display/rgb/set";
 pub const TEXT_TOPIC: &str = "app/text/set";
 pub const APP_TOPIC: &str = "app/set";
 pub const CLOCK_APP_TOPIC: &str = "app/clock/set";
+pub const NTP_SYNC_TOPIC: &str = "system/ntp/sync";
 
 static SEND_CHANNEL: Channel<ThreadModeRawMutex, MutexGuard<ThreadModeRawMutex, MqttMessage>, 4> =
     Channel::new();
@@ -139,7 +140,7 @@ pub mod clients {
 
     use super::{
         homeassistant, MqttMessage, MqttReceiveMessage, APP_TOPIC, BRIGHTNESS_TOPIC,
-        CLOCK_APP_TOPIC, COLOR_TOPIC, RGB_TOPIC, SEND_CHANNEL, TEXT_TOPIC,
+        CLOCK_APP_TOPIC, COLOR_TOPIC, NTP_SYNC_TOPIC, RGB_TOPIC, SEND_CHANNEL, TEXT_TOPIC,
     };
     use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC};
 
@@ -217,6 +218,7 @@ pub mod clients {
         stack: &'static Stack<cyw43::NetDriver<'static>>,
         display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
+        system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
         let tx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
         let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
@@ -274,15 +276,19 @@ pub mod clients {
         let mut clock_app_topic = heapless::String::<64>::new();
         write!(clock_app_topic, "{BASE_MQTT_TOPIC}/{CLOCK_APP_TOPIC}").unwrap();
 
+        let mut ntp_sync_topic = heapless::String::<64>::new();
+        write!(ntp_sync_topic, "{BASE_MQTT_TOPIC}/{NTP_SYNC_TOPIC}").unwrap();
+
         let hass_topic = "homeassistant/status";
 
-        let topics: Vec<&str, 7> = Vec::from_slice(&[
+        let topics: Vec<&str, 8> = Vec::from_slice(&[
             brightness_topic.as_str(),
             color_topic.as_str(),
             rgb_topic.as_str(),
             text_topic.as_str(),
             app_topic.as_str(),
             clock_app_topic.as_str(),
+            ntp_sync_topic.as_str(),
             hass_topic,
         ])
         .unwrap();
@@ -302,6 +308,8 @@ pub mod clients {
                             display_publisher.publish(message).await;
                         } else if mqtt_message.0.contains("app") {
                             app_publisher.publish(message).await;
+                        } else if mqtt_message.0.contains("system") {
+                            system_publisher.publish(message).await;
                         } else if mqtt_message.0.contains("homeassistant") {
                             homeassistant::HASS_RECIEVE_CHANNEL.send(message).await;
                         }
@@ -503,6 +511,28 @@ pub mod homeassistant {
   "bri_cmd_t": "~/brightness/set",
   "on_cmd_type": "brightness",
   "uniq_id": "{DEVICE_NAME}_light_01"
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+
+        let mut topic = String::<64>::new();
+        write!(
+            topic,
+            "{HASS_BASE_MQTT_TOPIC}/button/{DEVICE_NAME}/ntp_sync/config"
+        )
+        .unwrap();
+        let mut payload = String::<256>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
+    "ids": "{DEVICE_NAME}"
+  }},
+  "name": "NTP Sync",
+  "cmd_t": "{BASE_MQTT_TOPIC}/system/ntp/sync",
+  "uniq_id": "{DEVICE_NAME}_button_01"
 }}"#
         )
         .unwrap();

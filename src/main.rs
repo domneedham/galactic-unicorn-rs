@@ -13,6 +13,7 @@ mod fonts;
 mod graphics;
 mod mqtt;
 mod mqtt_app;
+mod system;
 mod time;
 mod unicorn;
 
@@ -194,6 +195,9 @@ async fn main(spawner: Spawner) {
     static MQTT_APP_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
 
+    static MQTT_SYSTEM_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
+        PubSubChannel::new();
+
     // mqtt clients
     spawner
         .spawn(mqtt::clients::mqtt_send_client(stack))
@@ -204,6 +208,7 @@ async fn main(spawner: Spawner) {
             stack,
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
             MQTT_APP_CHANNEL.publisher().unwrap(),
+            MQTT_SYSTEM_CHANNEL.publisher().unwrap(),
         ))
         .unwrap();
 
@@ -217,6 +222,12 @@ async fn main(spawner: Spawner) {
         .spawn(app::process_mqtt_messages_task(
             app_controller,
             MQTT_APP_CHANNEL.subscriber().unwrap(),
+        ))
+        .unwrap();
+
+    spawner
+        .spawn(system::process_mqtt_messages_task(
+            MQTT_SYSTEM_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
 
