@@ -1,6 +1,11 @@
 use core::fmt::Write;
 
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
+use embassy_sync::{
+    blocking_mutex::raw::ThreadModeRawMutex,
+    channel::Channel,
+    mutex::{Mutex, MutexGuard},
+};
+use embassy_time::Timer;
 use heapless::String;
 use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
@@ -11,13 +16,14 @@ pub const TEXT_TOPIC: &str = "app/text/set";
 pub const APP_TOPIC: &str = "app/set";
 pub const CLOCK_APP_TOPIC: &str = "app/clock/set";
 
-static SEND_CHANNEL: Channel<ThreadModeRawMutex, &'static mut MqttMessage, 4> = Channel::new();
+static SEND_CHANNEL: Channel<ThreadModeRawMutex, MutexGuard<ThreadModeRawMutex, MqttMessage>, 4> =
+    Channel::new();
 
-static mut MESSAGE_POOL: [MqttMessage; 4] = [
-    MqttMessage::new(),
-    MqttMessage::new(),
-    MqttMessage::new(),
-    MqttMessage::new(),
+static MESSAGE_POOL: [Mutex<ThreadModeRawMutex, MqttMessage>; 4] = [
+    Mutex::new(MqttMessage::new()),
+    Mutex::new(MqttMessage::new()),
+    Mutex::new(MqttMessage::new()),
+    Mutex::new(MqttMessage::new()),
 ];
 
 pub struct MqttMessage {
@@ -26,7 +32,6 @@ pub struct MqttMessage {
     qos: QualityOfService,
     retain: bool,
     include_base_topic: bool,
-    in_use: bool,
 }
 
 impl MqttMessage {
@@ -37,7 +42,6 @@ impl MqttMessage {
             qos: QualityOfService::QoS0,
             retain: false,
             include_base_topic: false,
-            in_use: false,
         }
     }
 
@@ -49,8 +53,6 @@ impl MqttMessage {
         retain: bool,
         include_base_topic: bool,
     ) {
-        self.in_use = true;
-
         self.topic.clear();
         self.topic.push_str(topic).unwrap();
         self.text.clear();
@@ -58,10 +60,6 @@ impl MqttMessage {
         self.qos = qos;
         self.retain = retain;
         self.include_base_topic = include_base_topic;
-    }
-
-    fn release(&mut self) {
-        self.in_use = false;
     }
 
     pub async fn enqueue_state(topic: &str, content: &str) {
@@ -79,12 +77,24 @@ impl MqttMessage {
         retain: bool,
         include_base_topic: bool,
     ) {
-        for message in unsafe { &mut MESSAGE_POOL } {
-            if !message.in_use {
-                message.reuse(topic, content, qos, retain, include_base_topic);
+        let mut queued = false;
+        while !queued {
+            for msg_mutex in &MESSAGE_POOL {
+                let msg_lock = msg_mutex.try_lock();
+                match msg_lock {
+                    Ok(mut message) => {
+                        message.reuse(topic, content, qos, retain, include_base_topic);
 
-                SEND_CHANNEL.send(message).await;
-                break;
+                        SEND_CHANNEL.send(message).await;
+                        queued = true;
+                        break;
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            if !queued {
+                Timer::after_millis(25).await;
             }
         }
     }
@@ -186,14 +196,13 @@ pub mod clients {
                         )
                         .await
                     {
-                        Ok(_) => {
-                            message.release();
-                        }
+                        Ok(_) => {}
                         Err(x) => {
-                            message.release();
                             MqttMessage::enqueue_debug(get_reason_code(x)).await;
                         }
                     }
+
+                    drop(message);
                 }
                 Either::Second(_) => match client.send_ping().await {
                     Ok(_) => {}
