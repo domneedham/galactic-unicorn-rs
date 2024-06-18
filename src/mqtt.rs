@@ -172,7 +172,7 @@ pub mod clients {
                 Either::First(message) => {
                     let mut topic = heapless::String::<256>::new();
                     if message.include_base_topic {
-                        _ = write!(topic, "{BASE_MQTT_TOPIC}");
+                        _ = write!(topic, "{BASE_MQTT_TOPIC}/");
                     }
                     let message_topic = &message.topic;
                     _ = write!(topic, "{message_topic}");
@@ -248,22 +248,22 @@ pub mod clients {
         };
 
         let mut brightness_topic = heapless::String::<64>::new();
-        write!(brightness_topic, "{BASE_MQTT_TOPIC}{BRIGHTNESS_TOPIC}").unwrap();
+        write!(brightness_topic, "{BASE_MQTT_TOPIC}/{BRIGHTNESS_TOPIC}").unwrap();
 
         let mut color_topic = heapless::String::<64>::new();
-        write!(color_topic, "{BASE_MQTT_TOPIC}{COLOR_TOPIC}").unwrap();
+        write!(color_topic, "{BASE_MQTT_TOPIC}/{COLOR_TOPIC}").unwrap();
 
         let mut rgb_topic = heapless::String::<64>::new();
-        write!(rgb_topic, "{BASE_MQTT_TOPIC}{RGB_TOPIC}").unwrap();
+        write!(rgb_topic, "{BASE_MQTT_TOPIC}/{RGB_TOPIC}").unwrap();
 
         let mut text_topic = heapless::String::<64>::new();
-        write!(text_topic, "{BASE_MQTT_TOPIC}{TEXT_TOPIC}").unwrap();
+        write!(text_topic, "{BASE_MQTT_TOPIC}/{TEXT_TOPIC}").unwrap();
 
         let mut app_topic = heapless::String::<64>::new();
-        write!(app_topic, "{BASE_MQTT_TOPIC}{APP_TOPIC}").unwrap();
+        write!(app_topic, "{BASE_MQTT_TOPIC}/{APP_TOPIC}").unwrap();
 
         let mut clock_app_topic = heapless::String::<64>::new();
-        write!(clock_app_topic, "{BASE_MQTT_TOPIC}{CLOCK_APP_TOPIC}").unwrap();
+        write!(clock_app_topic, "{BASE_MQTT_TOPIC}/{CLOCK_APP_TOPIC}").unwrap();
 
         let hass_topic = "homeassistant/status";
 
@@ -387,7 +387,7 @@ pub mod homeassistant {
     use crate::app::AppController;
     use crate::display::{send_brightness_state, send_color_state};
     use crate::mqtt::MqttMessage;
-    use crate::BASE_MQTT_TOPIC;
+    use crate::{BASE_MQTT_TOPIC, DEVICE_NAME, HASS_BASE_MQTT_TOPIC};
 
     use super::MqttReceiveMessage;
 
@@ -398,21 +398,23 @@ pub mod homeassistant {
         let mut topic = String::<64>::new();
         write!(
             topic,
-            "homeassistant/select/{BASE_MQTT_TOPIC}clock_effect/config"
+            "{HASS_BASE_MQTT_TOPIC}/select/{DEVICE_NAME}/clock_effect/config"
         )
         .unwrap();
-        let mut payload = String::<400>::new();
+        let mut payload = String::<512>::new();
         write!(
             payload,
             r#"
 {{
   "dev" : {{
+    "ids": "{DEVICE_NAME}",
     "name": "Galactic Unicorn",
-    "ids": "ga_01"
+    "manufacturer": "Pimoroni",
+    "model": "Galactic Unicorn"
   }},
   "name": "Clock effect",
-  "uniq_id": "ga_clock_01",
-  "~": "{BASE_MQTT_TOPIC}app/clock",
+  "uniq_id": "{DEVICE_NAME}_clock_01",
+  "~": "{BASE_MQTT_TOPIC}/app/clock",
   "stat_t": "~/state",
   "cmd_t": "~/set",
   "options": ["Rainbow", "Color"]
@@ -424,7 +426,7 @@ pub mod homeassistant {
         let mut topic = String::<64>::new();
         write!(
             topic,
-            "homeassistant/select/{BASE_MQTT_TOPIC}active_app/config"
+            "{HASS_BASE_MQTT_TOPIC}/select/{DEVICE_NAME}/active_app/config"
         )
         .unwrap();
         let mut payload = String::<256>::new();
@@ -433,12 +435,11 @@ pub mod homeassistant {
             r#"
 {{
   "dev" : {{
-    "name": "Galactic Unicorn",
-    "ids": "ga_01"
+    "ids": "{DEVICE_NAME}"
   }},
   "name": "Active app",
-  "uniq_id": "ga_apps_01",
-  "~": "{BASE_MQTT_TOPIC}app",
+  "uniq_id": "{DEVICE_NAME}_apps_01",
+  "~": "{BASE_MQTT_TOPIC}/app",
   "stat_t": "~/state",
   "cmd_t": "~/set",
   "options": ["Clock", "Effects", "Mqtt"]
@@ -450,7 +451,7 @@ pub mod homeassistant {
         let mut topic = String::<64>::new();
         write!(
             topic,
-            "homeassistant/notify/{BASE_MQTT_TOPIC}mqtt_message/config"
+            "{HASS_BASE_MQTT_TOPIC}/notify/{DEVICE_NAME}/mqtt_message/config"
         )
         .unwrap();
         let mut payload = String::<256>::new();
@@ -459,30 +460,32 @@ pub mod homeassistant {
             r#"
 {{
   "dev" : {{
-    "name": "Galactic Unicorn",
-    "ids": "ga_01"
+    "ids": "{DEVICE_NAME}"
   }},
   "name": "Display text",
-  "cmd_t": "{BASE_MQTT_TOPIC}app/text/set",
-  "uniq_id": "ga_display_text_01"
+  "cmd_t": "{BASE_MQTT_TOPIC}/app/text/set",
+  "uniq_id": "{DEVICE_NAME}_display_text_01"
 }}"#
         )
         .unwrap();
         MqttMessage::enqueue_hass(&topic, &payload).await;
 
         let mut topic = String::<64>::new();
-        write!(topic, "homeassistant/light/{BASE_MQTT_TOPIC}board/config").unwrap();
+        write!(
+            topic,
+            "{HASS_BASE_MQTT_TOPIC}/light/{DEVICE_NAME}/board/config"
+        )
+        .unwrap();
         let mut payload = String::<512>::new();
         write!(
             payload,
             r#"
 {{
   "dev" : {{
-    "name": "Galactic Unicorn",
-    "ids": "ga_01"
+    "ids": "{DEVICE_NAME}"
   }},
   "name": "Display",
-  "~": "{BASE_MQTT_TOPIC}display",
+  "~": "{BASE_MQTT_TOPIC}/display",
   "cmd_t": "~/brightness/set",
   "pl_off": 0,
   "rgb_stat_t": "~/rgb/state",
@@ -490,7 +493,7 @@ pub mod homeassistant {
   "bri_stat_t": "~/brightness/state",
   "bri_cmd_t": "~/brightness/set",
   "on_cmd_type": "brightness",
-  "uniq_id": "ga_light_01"
+  "uniq_id": "{DEVICE_NAME}_light_01"
 }}"#
         )
         .unwrap();
