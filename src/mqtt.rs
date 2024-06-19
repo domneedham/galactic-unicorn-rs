@@ -141,7 +141,8 @@ pub mod clients {
         homeassistant, MqttMessage, MqttReceiveMessage, APP_TOPIC, BRIGHTNESS_TOPIC,
         CLOCK_APP_TOPIC, NTP_SYNC_TOPIC, RGB_TOPIC, SEND_CHANNEL, TEXT_TOPIC,
     };
-    use crate::{unicorn::display::DisplayTextMessage, BASE_MQTT_TOPIC, HASS_BASE_MQTT_TOPIC};
+    use crate::config::{BASE_MQTT_TOPIC, HASS_BASE_MQTT_TOPIC};
+    use crate::unicorn::display::DisplayTextMessage;
 
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
@@ -398,9 +399,9 @@ pub mod homeassistant {
     use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
     use crate::app::AppController;
+    use crate::config::{BASE_MQTT_TOPIC, DEVICE_ID, HASS_BASE_MQTT_TOPIC};
     use crate::display::{send_brightness_state, send_color_state};
     use crate::mqtt::MqttMessage;
-    use crate::{BASE_MQTT_TOPIC, DEVICE_ID, HASS_BASE_MQTT_TOPIC};
 
     use super::MqttReceiveMessage;
 
