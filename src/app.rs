@@ -15,7 +15,11 @@ use unicorn_graphics::UnicornGraphics;
 use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
 use crate::clock_app::ClockApp;
 use crate::effects_app::EffectsApp;
-use crate::mqtt::{MqttMessage, MqttReceiveMessage, APP_TOPIC, CLOCK_APP_TOPIC, TEXT_TOPIC};
+use crate::mqtt::topics::APP_STATE_TOPIC;
+use crate::mqtt::{
+    topics::{APP_SET_TOPIC, CLOCK_APP_SET_TOPIC, TEXT_SET_TOPIC},
+    MqttMessage, MqttReceiveMessage,
+};
 use crate::mqtt_app::MqttApp;
 use crate::unicorn;
 use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
@@ -100,7 +104,7 @@ impl AppController {
     pub async fn send_states(&self) {
         let active_app = *self.active_app.lock().await;
         let app_text = active_app.into();
-        MqttMessage::enqueue_state("app/state", app_text).await;
+        MqttMessage::enqueue_state(APP_STATE_TOPIC, app_text).await;
 
         self.clock_app.send_state().await;
         self.effects_app.send_state().await;
@@ -134,16 +138,16 @@ pub async fn process_mqtt_messages_task(
     loop {
         let message = subscriber.next_message_pure().await;
 
-        if message.topic.contains(TEXT_TOPIC) {
+        if message.topic == TEXT_SET_TOPIC {
             DisplayTextMessage::from_mqtt(&message.body, None, None)
                 .send()
                 .await;
             app_controller.mqtt_app.set_last_message(message.body).await;
-        } else if message.topic.contains(CLOCK_APP_TOPIC) {
+        } else if message.topic == CLOCK_APP_SET_TOPIC {
             app_controller.clock_app.process_mqtt_message(message).await;
 
         // process this last
-        } else if message.topic.contains(APP_TOPIC) {
+        } else if message.topic == APP_SET_TOPIC {
             if let Ok(new_app) = Apps::from_str(&message.body) {
                 app_controller.change_app(new_app).await;
             }

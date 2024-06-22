@@ -1,7 +1,7 @@
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, pubsub::Subscriber};
 
 use crate::{
-    mqtt::{MqttReceiveMessage, NTP_SYNC_TOPIC},
+    mqtt::{topics::NTP_SYNC_TOPIC, MqttReceiveMessage},
     time::ntp::SYNC_SIGNAL,
 };
 
@@ -12,7 +12,7 @@ pub async fn process_mqtt_messages_task(
     loop {
         let message = subscriber.next_message_pure().await;
 
-        if message.topic.contains(NTP_SYNC_TOPIC) {
+        if message.topic == NTP_SYNC_TOPIC {
             SYNC_SIGNAL.signal(true);
         }
     }

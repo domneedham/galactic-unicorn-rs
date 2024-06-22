@@ -20,7 +20,7 @@ use crate::{
     app::UnicornApp,
     buttons::ButtonPress,
     fonts,
-    mqtt::MqttMessage,
+    mqtt::{topics::CLOCK_APP_STATE_TOPIC, MqttMessage},
     time::Time,
     unicorn::{
         self,
@@ -262,7 +262,7 @@ impl UnicornApp for ClockApp {
     async fn send_state(&self) {
         let effect = *self.effect.lock().await;
         let text = effect.into();
-        MqttMessage::enqueue_state("app/clock/state", text).await;
+        MqttMessage::enqueue_state(CLOCK_APP_STATE_TOPIC, text).await;
     }
 }
 

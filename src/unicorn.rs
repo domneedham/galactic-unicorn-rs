@@ -37,7 +37,12 @@ pub mod display {
 
     use crate::{
         buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
-        mqtt::{MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, RGB_TOPIC},
+        mqtt::{
+            topics::{
+                BRIGHTNESS_SET_TOPIC, BRIGHTNESS_STATE_TOPIC, RGB_SET_TOPIC, RGB_STATE_TOPIC,
+            },
+            MqttMessage, MqttReceiveMessage,
+        },
     };
 
     use super::GALACTIC_UNICORN;
@@ -327,7 +332,7 @@ pub mod display {
         let mut text = String::<3>::new();
         write!(text, "{brightness}").unwrap();
 
-        MqttMessage::enqueue_state("display/brightness/state", &text).await;
+        MqttMessage::enqueue_state(BRIGHTNESS_STATE_TOPIC, &text).await;
     }
 
     pub async fn set_color(color: Rgb888) {
@@ -358,7 +363,7 @@ pub mod display {
         let mut text = String::<11>::new();
         write!(text, "{r},{g},{b}").unwrap();
 
-        MqttMessage::enqueue_state("display/rgb/state", &text).await;
+        MqttMessage::enqueue_state(RGB_STATE_TOPIC, &text).await;
     }
 
     async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
@@ -595,13 +600,13 @@ pub mod display {
         loop {
             let message = subscriber.next_message_pure().await;
 
-            if message.topic.contains(BRIGHTNESS_TOPIC) {
+            if message.topic == BRIGHTNESS_SET_TOPIC {
                 let brightness: u8 = match message.body.parse() {
                     Ok(value) => value,
                     Err(_) => 255,
                 };
                 set_brightness(brightness).await;
-            } else if message.topic.contains(RGB_TOPIC) {
+            } else if message.topic == RGB_SET_TOPIC {
                 let mut r = String::<3>::new();
                 let mut g = String::<3>::new();
                 let mut b = String::<3>::new();
