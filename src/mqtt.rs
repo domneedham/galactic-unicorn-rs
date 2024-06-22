@@ -129,7 +129,7 @@ pub mod clients {
     use embassy_futures::select::{select, Either};
     use embassy_net::{tcp::TcpSocket, Stack};
     use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, pubsub::Publisher};
-    use embassy_time::{Duration, Timer};
+    use embassy_time::Timer;
     use heapless::Vec;
     use rust_mqtt::{
         client::{client::MqttClient, client_config::ClientConfig},
@@ -150,7 +150,7 @@ pub mod clients {
         let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
 
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(10)));
+        socket.set_timeout(None);
         let host_addr = embassy_net::Ipv4Address::new(192, 168, 1, 20);
         socket.connect((host_addr, 1883)).await.unwrap();
 
@@ -198,17 +198,12 @@ pub mod clients {
                         .await
                     {
                         Ok(_) => {}
-                        Err(x) => {
-                            MqttMessage::enqueue_debug(get_reason_code(x)).await;
-                        }
+                        Err(_) => {}
                     }
 
                     drop(message);
                 }
-                Either::Second(_) => match client.send_ping().await {
-                    Ok(_) => {}
-                    Err(code) => show_reason_code(code).await,
-                },
+                Either::Second(_) => _ = client.send_ping().await,
             }
         }
     }
@@ -224,7 +219,7 @@ pub mod clients {
         let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
 
         let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(30)));
+        socket.set_timeout(None);
         let host_addr = embassy_net::Ipv4Address::new(192, 168, 1, 20);
         match socket.connect((host_addr, 1883)).await {
             Ok(_) => {}
@@ -315,10 +310,7 @@ pub mod clients {
                         show_reason_code(code).await;
                     }
                 },
-                Either::Second(_) => match client.send_ping().await {
-                    Ok(_) => {}
-                    Err(code) => show_reason_code(code).await,
-                },
+                Either::Second(_) => _ = client.send_ping().await,
             }
         }
     }

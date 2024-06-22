@@ -1,3 +1,4 @@
+use cyw43::Control;
 use cyw43_pio::PioSpi;
 use embassy_executor::Spawner;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
@@ -11,7 +12,7 @@ use embassy_time::{Duration, Timer};
 use heapless::Vec;
 use static_cell::StaticCell;
 
-use crate::{config::*, unicorn::display::DisplayTextMessage};
+use crate::config::*;
 
 bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
@@ -60,6 +61,7 @@ pub async fn create_network(
     );
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
+
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
     spawner.spawn(wifi_task(runner)).unwrap();
 
@@ -90,17 +92,26 @@ pub async fn create_network(
 
     spawner.spawn(net_task(stack)).unwrap();
 
+    spawner.spawn(keep_connected_task(control, stack)).unwrap();
+
+    stack
+}
+
+#[embassy_executor::task]
+async fn keep_connected_task(
+    mut control: Control<'static>,
+    stack: &'static Stack<cyw43::NetDriver<'static>>,
+) {
     loop {
         match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
-            Ok(_) => break,
+            Ok(_) => {}
             Err(_) => {
-                DisplayTextMessage::from_system("Joining wifi...", None, None)
-                    .send_and_replace_queue()
-                    .await;
                 Timer::after(Duration::from_secs(2)).await;
             }
         }
-    }
 
-    stack
+        while stack.is_link_up() {
+            Timer::after_secs(10).await;
+        }
+    }
 }
