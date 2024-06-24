@@ -1,4 +1,3 @@
-use cyw43::Control;
 use cyw43_pio::PioSpi;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
@@ -46,7 +45,7 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
     stack.run().await
 }
 
-pub async fn create_network(
+pub async fn create_and_join_network(
     spawner: Spawner,
     app_state: &'static AppState,
     pin_23: PIN_23,
@@ -105,35 +104,20 @@ pub async fn create_network(
 
     spawner.spawn(net_task(stack)).unwrap();
 
-    spawner
-        .spawn(keep_connected_task(control, stack, app_state))
-        .unwrap();
-
-    spawner.spawn(monitor_network_task(app_state)).unwrap();
-
-    stack
-}
-
-#[embassy_executor::task]
-async fn keep_connected_task(
-    mut control: Control<'static>,
-    stack: &'static Stack<cyw43::NetDriver<'static>>,
-    app_state: &'static AppState,
-) {
     loop {
         match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
-            Ok(_) => {}
+            Ok(_) => break,
             Err(_) => {
                 Timer::after(Duration::from_secs(2)).await;
             }
         }
-
-        app_state.set_network_state(NetworkState::Connected).await;
-
-        while stack.is_link_up() {
-            Timer::after_secs(10).await;
-        }
     }
+
+    app_state.set_network_state(NetworkState::Connected).await;
+
+    spawner.spawn(monitor_network_task(app_state)).unwrap();
+
+    stack
 }
 
 #[embassy_executor::task]

@@ -99,7 +99,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_b_task(button_pins.switch_b)).unwrap();
     spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
 
-    let stack = network::create_network(
+    let stack = network::create_and_join_network(
         spawner, app_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
     )
     .await;
