@@ -1,9 +1,35 @@
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, pubsub::Subscriber};
+use embassy_sync::{
+    blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex, pubsub::Subscriber, signal::Signal,
+};
 
 use crate::{
     mqtt::{topics::NTP_SYNC_TOPIC, MqttReceiveMessage},
+    network::NetworkState,
     time::ntp::SYNC_SIGNAL,
 };
+
+pub static STATE_CHANGED: Signal<ThreadModeRawMutex, bool> = Signal::new();
+
+pub struct AppState {
+    network_state: Mutex<ThreadModeRawMutex, NetworkState>,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            network_state: Mutex::new(NetworkState::NotInitialised),
+        }
+    }
+
+    pub async fn get_network_state(&'static self) -> NetworkState {
+        *self.network_state.lock().await
+    }
+
+    pub async fn set_network_state(&'static self, state: NetworkState) {
+        *self.network_state.lock().await = state;
+        STATE_CHANGED.signal(true);
+    }
+}
 
 #[embassy_executor::task]
 pub async fn process_mqtt_messages_task(

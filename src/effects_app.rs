@@ -49,7 +49,7 @@ impl UnicornApp for EffectsApp {
 
     async fn process_mqtt_message(&self, _: crate::mqtt::MqttReceiveMessage) {}
 
-    async fn send_state(&self) {}
+    async fn send_mqtt_state(&self) {}
 }
 
 mod effects {

@@ -14,6 +14,7 @@ mod mqtt;
 mod mqtt_app;
 mod network;
 mod system;
+mod system_app;
 mod time;
 mod unicorn;
 
@@ -34,7 +35,6 @@ use crate::buttons::{
 };
 use crate::mqtt::MqttReceiveMessage;
 use crate::unicorn::display;
-use crate::unicorn::display::DisplayTextMessage;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -64,9 +64,24 @@ async fn main(spawner: Spawner) {
     };
 
     unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
-    DisplayTextMessage::from_system("Initialising...", None, None)
-        .send()
-        .await;
+
+    let app_state = make_static!(system::AppState::new());
+    let system_app = make_static!(system_app::SystemApp::new(app_state));
+    let time = make_static!(time::Time::new());
+    let clock_app = make_static!(clock_app::ClockApp::new(time));
+    let effects_app = make_static!(effects_app::EffectsApp::new());
+    let mqtt_app = make_static!(mqtt_app::MqttApp::new());
+
+    let app_controller = make_static!(app::AppController::new(
+        system_app,
+        clock_app,
+        effects_app,
+        mqtt_app,
+        app_state,
+        spawner
+    ));
+
+    app_controller.init();
 
     spawner
         .spawn(display::process_display_queue_task())
@@ -87,23 +102,9 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
 
     let stack = network::create_network(
-        spawner, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
+        spawner, app_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
     )
     .await;
-
-    let time = make_static!(time::Time::new());
-    spawner.spawn(time::ntp::ntp_worker(stack, time)).unwrap();
-
-    let clock_app = make_static!(clock_app::ClockApp::new(time));
-    let effects_app = make_static!(effects_app::EffectsApp::new());
-    let mqtt_app = make_static!(mqtt_app::MqttApp::new());
-
-    let app_controller = make_static!(app::AppController::new(
-        clock_app,
-        effects_app,
-        mqtt_app,
-        spawner
-    ));
 
     static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
@@ -113,6 +114,8 @@ async fn main(spawner: Spawner) {
 
     static MQTT_SYSTEM_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
+
+    spawner.spawn(time::ntp::ntp_worker(stack, time)).unwrap();
 
     // mqtt clients
     spawner
@@ -151,5 +154,5 @@ async fn main(spawner: Spawner) {
         .spawn(mqtt::homeassistant::hass_discovery_task(app_controller))
         .unwrap();
 
-    app_controller.run().await;
+    app_controller.run_forever().await;
 }

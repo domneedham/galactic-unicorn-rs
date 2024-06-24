@@ -132,15 +132,21 @@ pub mod topics {
 }
 
 pub mod clients {
+    use constcat::concat;
     use cortex_m::singleton;
     use embassy_futures::select::{select, Either};
-    use embassy_net::{tcp::TcpSocket, Stack};
-    use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, pubsub::Publisher};
+    use embassy_net::{tcp::TcpSocket, Ipv4Address, Stack};
+    use embassy_sync::{
+        blocking_mutex::raw::ThreadModeRawMutex, pubsub::Publisher, signal::Signal,
+    };
     use embassy_time::Timer;
     use heapless::Vec;
     use rust_mqtt::{
-        client::{client::MqttClient, client_config::ClientConfig},
-        packet::v5::reason_codes::ReasonCode,
+        client::{
+            client::MqttClient,
+            client_config::{ClientConfig, MqttVersion},
+        },
+        packet::v5::{publish_packet::QualityOfService, reason_codes::ReasonCode},
         utils::rng_generator::CountingRng,
     };
 
@@ -152,63 +158,111 @@ pub mod clients {
         },
         MqttMessage, MqttReceiveMessage, SEND_CHANNEL,
     };
-    use crate::config::{BASE_MQTT_TOPIC, HASS_BASE_MQTT_TOPIC};
-    use crate::unicorn::display::DisplayTextMessage;
+    use crate::config::{
+        DEVICE_ID, HASS_BASE_MQTT_TOPIC, MQTT_BROKER_A1, MQTT_BROKER_A2, MQTT_BROKER_A3,
+        MQTT_BROKER_A4, MQTT_BROKER_PORT, MQTT_PASSWORD, MQTT_USERNAME,
+    };
 
-    #[embassy_executor::task]
-    pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
-        let tx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
-        let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
+    pub static SEND_CLIENT_ERROR: Signal<ThreadModeRawMutex, bool> = Signal::new();
+    pub static RECEIVE_CLIENT_ERROR: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
-        let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
+    const SOCKET_BUF_SIZE: usize = 2048;
+    const CLIENT_BUF_SIZE: usize = 512;
+
+    async fn create_client<'a>(
+        stack: &'static Stack<cyw43::NetDriver<'static>>,
+        client_type: &'static str,
+        socket_rx_buffer: &'a mut [u8],
+        socket_tx_buffer: &'a mut [u8],
+        client_rx_buffer: &'a mut [u8],
+        client_tx_buffer: &'a mut [u8],
+    ) -> MqttClient<'a, TcpSocket<'a>, 5, CountingRng> {
+        let mut socket = TcpSocket::new(stack, socket_rx_buffer, socket_tx_buffer);
         socket.set_timeout(None);
-        let host_addr = embassy_net::Ipv4Address::new(192, 168, 1, 20);
-        socket.connect((host_addr, 1883)).await.unwrap();
-
-        let mut config = ClientConfig::new(
-            rust_mqtt::client::client_config::MqttVersion::MQTTv5,
-            CountingRng(20000),
+        let host_addr = Ipv4Address::new(
+            MQTT_BROKER_A1,
+            MQTT_BROKER_A2,
+            MQTT_BROKER_A3,
+            MQTT_BROKER_A4,
         );
-        config.add_max_subscribe_qos(rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS1);
-        config.add_client_id("client");
-        // config.add_username(USERNAME);
-        // config.add_password(PASSWORD);
-        config.max_packet_size = 600;
+        socket.connect((host_addr, MQTT_BROKER_PORT)).await.unwrap();
 
-        let mut recv_buffer = [0; 512];
-        let mut write_buffer = [0; 512];
+        let mut config = ClientConfig::new(MqttVersion::MQTTv5, CountingRng(20000));
+        config.max_packet_size = 100;
+        config.add_max_subscribe_qos(QualityOfService::QoS1);
+        config.add_client_id(client_type.into());
+
+        if !MQTT_USERNAME.is_empty() {
+            config.add_username(MQTT_USERNAME);
+            config.add_password(MQTT_PASSWORD);
+        }
 
         let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> = MqttClient::<_, 5, _>::new(
             socket,
-            &mut write_buffer,
-            512,
-            &mut recv_buffer,
-            512,
+            client_tx_buffer,
+            CLIENT_BUF_SIZE,
+            client_rx_buffer,
+            CLIENT_BUF_SIZE,
             config,
         );
 
         client.connect_to_broker().await.unwrap();
 
-        loop {
-            match select(SEND_CHANNEL.receive(), Timer::after_secs(5)).await {
-                Either::First(message) => {
-                    match client
-                        .send_message(
-                            message.topic,
-                            message.text.as_bytes(),
-                            message.qos,
-                            message.retain,
-                        )
-                        .await
-                    {
-                        Ok(_) => {}
-                        Err(_) => {}
-                    }
+        client
+    }
 
-                    drop(message);
+    #[embassy_executor::task]
+    pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
+        let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
+        let socket_tx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
+        let client_rx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
+        let client_tx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
+
+        let mut client = create_client(
+            stack,
+            concat!(DEVICE_ID, "_sender"),
+            socket_rx_buffer,
+            socket_tx_buffer,
+            client_rx_buffer,
+            client_tx_buffer,
+        )
+        .await;
+
+        let mut was_previous_error = false;
+
+        loop {
+            let result: Result<(), ReasonCode> =
+                match select(SEND_CHANNEL.receive(), Timer::after_secs(5)).await {
+                    Either::First(message) => {
+                        let result = client
+                            .send_message(
+                                message.topic,
+                                message.text.as_bytes(),
+                                message.qos,
+                                message.retain,
+                            )
+                            .await;
+
+                        drop(message);
+                        result
+                    }
+                    Either::Second(_) => client.send_ping().await,
+                };
+
+            match result {
+                Ok(_) => {
+                    if was_previous_error {
+                        SEND_CLIENT_ERROR.signal(false);
+                        was_previous_error = false;
+                    }
                 }
-                Either::Second(_) => _ = client.send_ping().await,
-            }
+                Err(_) => {
+                    if !was_previous_error {
+                        SEND_CLIENT_ERROR.signal(true);
+                        was_previous_error = true;
+                    }
+                }
+            };
         }
     }
 
@@ -219,43 +273,20 @@ pub mod clients {
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
-        let tx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
-        let rx_buffer = singleton!(: [u8; 2048] = [0; 2048]).unwrap();
+        let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
+        let socket_tx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
+        let client_rx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
+        let client_tx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
 
-        let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
-        socket.set_timeout(None);
-        let host_addr = embassy_net::Ipv4Address::new(192, 168, 1, 20);
-        match socket.connect((host_addr, 1883)).await {
-            Ok(_) => {}
-            Err(_) => loop {
-                DisplayTextMessage::from_mqtt("Failed to connect to socket", None, None)
-                    .send()
-                    .await;
-                Timer::after_secs(1).await;
-            },
-        };
-
-        let mut config = ClientConfig::new(
-            rust_mqtt::client::client_config::MqttVersion::MQTTv5,
-            CountingRng(50000),
-        );
-        config.add_max_subscribe_qos(rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS1);
-        config.add_client_id("receiver");
-        // config.add_username(USERNAME);
-        // config.add_password(PASSWORD);
-        config.max_packet_size = 100;
-        let recv_buffer = singleton!(: [u8; 512] = [0; 512]).unwrap();
-        let write_buffer = singleton!(: [u8; 512] = [0; 512]).unwrap();
-
-        let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> =
-            MqttClient::<_, 5, _>::new(socket, write_buffer, 512, recv_buffer, 512, config);
-
-        match client.connect_to_broker().await {
-            Ok(_) => {
-                MqttMessage::enqueue_debug("Connected to receiver broker").await;
-            }
-            Err(code) => send_reason_code(code).await,
-        };
+        let mut client = create_client(
+            stack,
+            concat!(DEVICE_ID, "_receiver"),
+            socket_rx_buffer,
+            socket_tx_buffer,
+            client_rx_buffer,
+            client_tx_buffer,
+        )
+        .await;
 
         let topics: Vec<&str, 7> = Vec::from_slice(&[
             BRIGHTNESS_SET_TOPIC,
@@ -273,28 +304,46 @@ pub mod clients {
             Err(code) => send_reason_code(code).await,
         };
 
-        loop {
-            match select(client.receive_message(), Timer::after_secs(5)).await {
-                Either::First(received_message) => match received_message {
-                    Ok(mqtt_message) => {
-                        let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
+        let mut was_previous_error = false;
 
-                        if mqtt_message.0.contains("display") {
-                            display_publisher.publish(message).await;
-                        } else if mqtt_message.0.contains("app") {
-                            app_publisher.publish(message).await;
-                        } else if mqtt_message.0.contains("system") {
-                            system_publisher.publish(message).await;
-                        } else if mqtt_message.0.contains(HASS_BASE_MQTT_TOPIC) {
-                            homeassistant::HASS_RECIEVE_CHANNEL.send(message).await;
+        loop {
+            let result: Result<(), ReasonCode> =
+                match select(client.receive_message(), Timer::after_secs(5)).await {
+                    Either::First(received_message) => match received_message {
+                        Ok(mqtt_message) => {
+                            let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
+
+                            if mqtt_message.0.contains("display") {
+                                display_publisher.publish(message).await;
+                            } else if mqtt_message.0.contains("app") {
+                                app_publisher.publish(message).await;
+                            } else if mqtt_message.0.contains("system") {
+                                system_publisher.publish(message).await;
+                            } else if mqtt_message.0.contains(HASS_BASE_MQTT_TOPIC) {
+                                homeassistant::HASS_RECIEVE_CHANNEL.send(message).await;
+                            }
+
+                            Ok(())
                         }
+                        Err(code) => Err(code),
+                    },
+                    Either::Second(_) => client.send_ping().await,
+                };
+
+            match result {
+                Ok(_) => {
+                    if was_previous_error {
+                        RECEIVE_CLIENT_ERROR.signal(false);
+                        was_previous_error = false;
                     }
-                    Err(code) => {
-                        show_reason_code(code).await;
+                }
+                Err(_) => {
+                    if !was_previous_error {
+                        RECEIVE_CLIENT_ERROR.signal(true);
+                        was_previous_error = true;
                     }
-                },
-                Either::Second(_) => _ = client.send_ping().await,
-            }
+                }
+            };
         }
     }
 
@@ -354,13 +403,6 @@ pub mod clients {
     async fn send_reason_code(code: ReasonCode) {
         let message = get_reason_code(code);
         MqttMessage::enqueue_debug(message).await;
-    }
-
-    async fn show_reason_code(code: ReasonCode) {
-        let text = get_reason_code(code);
-        DisplayTextMessage::from_system(text, None, None)
-            .send_and_replace_queue()
-            .await;
     }
 }
 
@@ -510,7 +552,7 @@ pub mod homeassistant {
     async fn send_states(app_controller: &'static AppController) {
         send_brightness_state().await;
         send_color_state().await;
-        app_controller.send_states().await;
+        app_controller.send_mqtt_states().await;
     }
 
     impl MqttMessage {

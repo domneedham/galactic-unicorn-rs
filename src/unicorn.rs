@@ -56,14 +56,12 @@ pub mod display {
     static INTERRUPT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 1> =
         Channel::new();
     static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
-    static SYSTEM_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
     static APP_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
 
     pub static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
     enum DisplayChannels {
         MQTT,
-        SYSTEM,
         APP,
     }
 
@@ -103,30 +101,6 @@ pub mod display {
                 duration: Duration::from_secs(3),
                 first_shown: None,
                 channel: DisplayChannels::MQTT,
-            }
-        }
-
-        pub fn from_system(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
-            let point = match point {
-                Some(x) => x,
-                None => Point::new(0, (HEIGHT / 2) as i32),
-            };
-
-            let mut heapless_text = String::<64>::new();
-            match heapless_text.push_str(text) {
-                Ok(_) => {}
-                Err(_) => {
-                    heapless_text.push_str("Too many characters!").unwrap();
-                }
-            };
-
-            Self {
-                text: heapless_text,
-                color,
-                point,
-                duration: Duration::from_secs(3),
-                first_shown: None,
-                channel: DisplayChannels::SYSTEM,
             }
         }
 
@@ -171,11 +145,6 @@ pub mod display {
                 DisplayChannels::MQTT => {
                     MQTT_DISPLAY_CHANNEL.send(DisplayMessage::Text(self)).await
                 }
-                DisplayChannels::SYSTEM => {
-                    SYSTEM_DISPLAY_CHANNEL
-                        .send(DisplayMessage::Text(self))
-                        .await
-                }
                 DisplayChannels::APP => APP_DISPLAY_CHANNEL.send(DisplayMessage::Text(self)).await,
             }
         }
@@ -185,11 +154,6 @@ pub mod display {
                 DisplayChannels::MQTT => {
                     // clear channel
                     while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {}
-                    self.send().await;
-                }
-                DisplayChannels::SYSTEM => {
-                    // clear channel
-                    while SYSTEM_DISPLAY_CHANNEL.try_receive().is_ok() {}
                     self.send().await;
                 }
                 DisplayChannels::APP => {
@@ -272,11 +236,6 @@ pub mod display {
                         .send(DisplayMessage::Graphics(self))
                         .await
                 }
-                DisplayChannels::SYSTEM => {
-                    SYSTEM_DISPLAY_CHANNEL
-                        .send(DisplayMessage::Graphics(self))
-                        .await
-                }
                 DisplayChannels::APP => {
                     APP_DISPLAY_CHANNEL
                         .send(DisplayMessage::Graphics(self))
@@ -290,11 +249,6 @@ pub mod display {
                 DisplayChannels::MQTT => {
                     // clear channel
                     while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {}
-                    self.send().await;
-                }
-                DisplayChannels::SYSTEM => {
-                    // clear channel
-                    while SYSTEM_DISPLAY_CHANNEL.try_receive().is_ok() {}
                     self.send().await;
                 }
                 DisplayChannels::APP => {
@@ -506,16 +460,6 @@ pub mod display {
 
             if !is_message_replaced {
                 match MQTT_DISPLAY_CHANNEL.try_receive() {
-                    Ok(value) => {
-                        is_message_replaced = true;
-                        message.replace(value);
-                    }
-                    Err(_) => {}
-                }
-            }
-
-            if !is_message_replaced {
-                match SYSTEM_DISPLAY_CHANNEL.try_receive() {
                     Ok(value) => {
                         is_message_replaced = true;
                         message.replace(value);

@@ -50,7 +50,7 @@ impl ClockApp {
 
     pub async fn set_effect(&self, effect: ClockEffect) {
         *self.effect.lock().await = effect;
-        self.send_state().await;
+        self.send_mqtt_state().await;
     }
 
     pub async fn get_date_str(&self) -> String<12> {
@@ -259,7 +259,7 @@ impl UnicornApp for ClockApp {
         }
     }
 
-    async fn send_state(&self) {
+    async fn send_mqtt_state(&self) {
         let effect = *self.effect.lock().await;
         let text = effect.into();
         MqttMessage::enqueue_state(CLOCK_APP_STATE_TOPIC, text).await;

@@ -1,6 +1,7 @@
 use cyw43::Control;
 use cyw43_pio::PioSpi;
 use embassy_executor::Spawner;
+use embassy_futures::select::{select, Either};
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_rp::{
     bind_interrupts,
@@ -12,7 +13,18 @@ use embassy_time::{Duration, Timer};
 use heapless::Vec;
 use static_cell::StaticCell;
 
-use crate::config::*;
+use crate::{
+    config::*,
+    mqtt::clients::{RECEIVE_CLIENT_ERROR, SEND_CLIENT_ERROR},
+    system::AppState,
+};
+
+#[derive(Clone, Copy)]
+pub enum NetworkState {
+    NotInitialised,
+    Connected,
+    Error,
+}
 
 bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
@@ -36,6 +48,7 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 
 pub async fn create_network(
     spawner: Spawner,
+    app_state: &'static AppState,
     pin_23: PIN_23,
     pin_24: PIN_24,
     pin_25: PIN_25,
@@ -92,7 +105,11 @@ pub async fn create_network(
 
     spawner.spawn(net_task(stack)).unwrap();
 
-    spawner.spawn(keep_connected_task(control, stack)).unwrap();
+    spawner
+        .spawn(keep_connected_task(control, stack, app_state))
+        .unwrap();
+
+    spawner.spawn(monitor_network_task(app_state)).unwrap();
 
     stack
 }
@@ -101,6 +118,7 @@ pub async fn create_network(
 async fn keep_connected_task(
     mut control: Control<'static>,
     stack: &'static Stack<cyw43::NetDriver<'static>>,
+    app_state: &'static AppState,
 ) {
     loop {
         match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
@@ -110,8 +128,24 @@ async fn keep_connected_task(
             }
         }
 
+        app_state.set_network_state(NetworkState::Connected).await;
+
         while stack.is_link_up() {
             Timer::after_secs(10).await;
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn monitor_network_task(app_state: &'static AppState) {
+    let res = match select(SEND_CLIENT_ERROR.wait(), RECEIVE_CLIENT_ERROR.wait()).await {
+        Either::First(val) => val,
+        Either::Second(val) => val,
+    };
+
+    if res {
+        app_state.set_network_state(NetworkState::Connected).await;
+    } else {
+        app_state.set_network_state(NetworkState::Error).await;
     }
 }
