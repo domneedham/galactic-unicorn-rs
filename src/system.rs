@@ -8,7 +8,11 @@ use crate::{
     time::ntp::SYNC_SIGNAL,
 };
 
-pub static STATE_CHANGED: Signal<ThreadModeRawMutex, bool> = Signal::new();
+pub static STATE_CHANGED: Signal<ThreadModeRawMutex, StateUpdates> = Signal::new();
+
+pub enum StateUpdates {
+    Network,
+}
 
 pub struct AppState {
     network_state: Mutex<ThreadModeRawMutex, NetworkState>,
@@ -27,7 +31,7 @@ impl AppState {
 
     pub async fn set_network_state(&'static self, state: NetworkState) {
         *self.network_state.lock().await = state;
-        STATE_CHANGED.signal(true);
+        STATE_CHANGED.signal(StateUpdates::Network);
     }
 }
 

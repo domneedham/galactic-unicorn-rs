@@ -13,6 +13,10 @@ impl SystemApp {
     pub fn new(app_state: &'static AppState) -> Self {
         Self { app_state }
     }
+
+    pub async fn prepare_for_app_change(&self) {
+        Timer::after_secs(2).await;
+    }
 }
 
 impl UnicornApp for SystemApp {

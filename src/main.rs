@@ -72,16 +72,14 @@ async fn main(spawner: Spawner) {
     let effects_app = make_static!(effects_app::EffectsApp::new());
     let mqtt_app = make_static!(mqtt_app::MqttApp::new());
 
-    let app_controller = make_static!(app::AppController::new(
+    let app_controller = app::AppController::new(
         system_app,
         clock_app,
         effects_app,
         mqtt_app,
         app_state,
-        spawner
-    ));
-
-    app_controller.init();
+        spawner,
+    );
 
     spawner
         .spawn(display::process_display_queue_task())

@@ -6,9 +6,10 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::pubsub::Subscriber;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::Duration;
 
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
+use static_cell::make_static;
 use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
@@ -22,7 +23,7 @@ use crate::mqtt::{
 };
 use crate::mqtt_app::MqttApp;
 use crate::network::NetworkState;
-use crate::system::{AppState, STATE_CHANGED};
+use crate::system::{AppState, StateUpdates, STATE_CHANGED};
 use crate::system_app::SystemApp;
 use crate::unicorn;
 use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
@@ -69,8 +70,8 @@ impl AppController {
         mqtt_app: &'static MqttApp,
         app_state: &'static AppState,
         spawner: Spawner,
-    ) -> Self {
-        Self {
+    ) -> &'static Self {
+        let controller = make_static!(Self {
             active_app: Mutex::new(Apps::System),
             previous_app: Mutex::new(Apps::Clock),
             system_app,
@@ -79,10 +80,14 @@ impl AppController {
             mqtt_app,
             app_state,
             spawner,
-        }
+        });
+
+        controller.init();
+
+        controller
     }
 
-    pub fn init(&'static self) {
+    fn init(&'static self) {
         self.spawner.spawn(display_task(self)).unwrap();
         self.spawner.spawn(process_state_change_task(self)).unwrap();
     }
@@ -172,8 +177,6 @@ pub async fn process_mqtt_messages_task(
             app_controller.mqtt_app.set_last_message(message.body).await;
         } else if message.topic == CLOCK_APP_SET_TOPIC {
             app_controller.clock_app.process_mqtt_message(message).await;
-
-        // process this last
         } else if message.topic == APP_SET_TOPIC {
             if let Ok(new_app) = Apps::from_str(&message.body) {
                 app_controller.change_app(new_app).await;
@@ -187,25 +190,28 @@ pub async fn process_mqtt_messages_task(
 #[embassy_executor::task]
 async fn process_state_change_task(app_controller: &'static AppController) {
     loop {
-        _ = STATE_CHANGED.wait().await;
+        let state_update = STATE_CHANGED.wait().await;
 
         MqttMessage::enqueue_debug("State changed").await;
 
-        match app_controller.app_state.get_network_state().await {
-            NetworkState::NotInitialised => {}
-            NetworkState::Connected => {
-                let current_app = *app_controller.active_app.lock().await;
+        match state_update {
+            StateUpdates::Network => {
+                match app_controller.app_state.get_network_state().await {
+                    NetworkState::NotInitialised => {}
+                    NetworkState::Connected => {
+                        let current_app = *app_controller.active_app.lock().await;
 
-                // let system app UI change
-                if current_app == Apps::System {
-                    Timer::after_secs(2).await;
-                }
+                        if current_app == Apps::System {
+                            app_controller.system_app.prepare_for_app_change().await;
+                        }
 
-                let previous_app = *app_controller.previous_app.lock().await;
-                app_controller.change_app(previous_app).await;
+                        let previous_app = *app_controller.previous_app.lock().await;
+                        app_controller.change_app(previous_app).await;
+                    }
+                    NetworkState::Error => app_controller.change_app(Apps::System).await,
+                };
             }
-            NetworkState::Error => app_controller.change_app(Apps::System).await,
-        };
+        }
     }
 }
 
