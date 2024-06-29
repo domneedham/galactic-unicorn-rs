@@ -12,7 +12,7 @@ use embedded_graphics::{
 use embedded_graphics_core::Drawable;
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use heapless::{String, Vec};
-use micromath::F32Ext as _; // needed for rem_euclid, floor, abs and round
+use micromath::F32Ext;
 use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
