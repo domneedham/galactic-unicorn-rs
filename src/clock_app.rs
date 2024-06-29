@@ -149,10 +149,10 @@ impl UnicornApp for ClockApp {
             Self::draw_numbers(&mut gr, second, 28, color);
 
             Rectangle::new(
-                Point { x: 41, y: 3 },
+                Point { x: 42, y: 3 },
                 Size {
                     height: 8,
-                    width: 12,
+                    width: 11,
                 },
             )
             .into_styled(white_style)
@@ -160,10 +160,10 @@ impl UnicornApp for ClockApp {
             .unwrap();
 
             Rectangle::new(
-                Point { x: 41, y: 0 },
+                Point { x: 42, y: 0 },
                 Size {
                     height: 3,
-                    width: 12,
+                    width: 11,
                 },
             )
             .into_styled(red_style)
@@ -173,7 +173,7 @@ impl UnicornApp for ClockApp {
             let day = self.get_day_str().await;
             Text::new(
                 &day,
-                Point { x: 42, y: 9 },
+                Point { x: 43, y: 9 },
                 MonoTextStyle::new(&FONT_5X7, Rgb888::RED),
             )
             .draw(&mut gr)
