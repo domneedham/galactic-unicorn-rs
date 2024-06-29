@@ -67,5 +67,5 @@ impl UnicornApp for MqttApp {
 
     async fn process_mqtt_message(&self, _: MqttReceiveMessage) {}
 
-    async fn send_state(&self) {}
+    async fn send_mqtt_state(&self) {}
 }

@@ -37,7 +37,12 @@ pub mod display {
 
     use crate::{
         buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
-        mqtt::{MqttMessage, MqttReceiveMessage, BRIGHTNESS_TOPIC, RGB_TOPIC},
+        mqtt::{
+            topics::{
+                BRIGHTNESS_SET_TOPIC, BRIGHTNESS_STATE_TOPIC, RGB_SET_TOPIC, RGB_STATE_TOPIC,
+            },
+            MqttMessage, MqttReceiveMessage,
+        },
     };
 
     use super::GALACTIC_UNICORN;
@@ -51,14 +56,12 @@ pub mod display {
     static INTERRUPT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 1> =
         Channel::new();
     static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
-    static SYSTEM_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
     static APP_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 16> = Channel::new();
 
     pub static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
     enum DisplayChannels {
         MQTT,
-        SYSTEM,
         APP,
     }
 
@@ -98,30 +101,6 @@ pub mod display {
                 duration: Duration::from_secs(3),
                 first_shown: None,
                 channel: DisplayChannels::MQTT,
-            }
-        }
-
-        pub fn from_system(text: &str, color: Option<Rgb888>, point: Option<Point>) -> Self {
-            let point = match point {
-                Some(x) => x,
-                None => Point::new(0, (HEIGHT / 2) as i32),
-            };
-
-            let mut heapless_text = String::<64>::new();
-            match heapless_text.push_str(text) {
-                Ok(_) => {}
-                Err(_) => {
-                    heapless_text.push_str("Too many characters!").unwrap();
-                }
-            };
-
-            Self {
-                text: heapless_text,
-                color,
-                point,
-                duration: Duration::from_secs(3),
-                first_shown: None,
-                channel: DisplayChannels::SYSTEM,
             }
         }
 
@@ -166,11 +145,6 @@ pub mod display {
                 DisplayChannels::MQTT => {
                     MQTT_DISPLAY_CHANNEL.send(DisplayMessage::Text(self)).await
                 }
-                DisplayChannels::SYSTEM => {
-                    SYSTEM_DISPLAY_CHANNEL
-                        .send(DisplayMessage::Text(self))
-                        .await
-                }
                 DisplayChannels::APP => APP_DISPLAY_CHANNEL.send(DisplayMessage::Text(self)).await,
             }
         }
@@ -180,11 +154,6 @@ pub mod display {
                 DisplayChannels::MQTT => {
                     // clear channel
                     while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {}
-                    self.send().await;
-                }
-                DisplayChannels::SYSTEM => {
-                    // clear channel
-                    while SYSTEM_DISPLAY_CHANNEL.try_receive().is_ok() {}
                     self.send().await;
                 }
                 DisplayChannels::APP => {
@@ -220,16 +189,13 @@ pub mod display {
 
     pub struct DisplayGraphicsMessage {
         pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
-        duration: Option<Duration>,
+        duration: Duration,
         first_shown: Option<Instant>,
         channel: DisplayChannels,
     }
 
     impl DisplayGraphicsMessage {
-        pub fn from_app(
-            pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
-            duration: Option<Duration>,
-        ) -> Self {
+        pub fn from_app(pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>, duration: Duration) -> Self {
             Self {
                 pixels,
                 duration,
@@ -247,15 +213,11 @@ pub mod display {
         }
 
         pub fn has_min_duration_passed(&self) -> bool {
-            if self.duration.is_none() {
-                return true;
-            }
-
             if self.first_shown.is_none() {
                 return false;
             }
 
-            self.first_shown.unwrap().elapsed() > self.duration.unwrap()
+            self.first_shown.unwrap().elapsed() > self.duration
         }
     }
 
@@ -264,11 +226,6 @@ pub mod display {
             match self.channel {
                 DisplayChannels::MQTT => {
                     MQTT_DISPLAY_CHANNEL
-                        .send(DisplayMessage::Graphics(self))
-                        .await
-                }
-                DisplayChannels::SYSTEM => {
-                    SYSTEM_DISPLAY_CHANNEL
                         .send(DisplayMessage::Graphics(self))
                         .await
                 }
@@ -285,11 +242,6 @@ pub mod display {
                 DisplayChannels::MQTT => {
                     // clear channel
                     while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {}
-                    self.send().await;
-                }
-                DisplayChannels::SYSTEM => {
-                    // clear channel
-                    while SYSTEM_DISPLAY_CHANNEL.try_receive().is_ok() {}
                     self.send().await;
                 }
                 DisplayChannels::APP => {
@@ -327,7 +279,7 @@ pub mod display {
         let mut text = String::<3>::new();
         write!(text, "{brightness}").unwrap();
 
-        MqttMessage::enqueue_state("display/brightness/state", &text).await;
+        MqttMessage::enqueue_state(BRIGHTNESS_STATE_TOPIC, &text).await;
     }
 
     pub async fn set_color(color: Rgb888) {
@@ -358,18 +310,18 @@ pub mod display {
         let mut text = String::<11>::new();
         write!(text, "{r},{g},{b}").unwrap();
 
-        MqttMessage::enqueue_state("display/rgb/state", &text).await;
+        MqttMessage::enqueue_state(RGB_STATE_TOPIC, &text).await;
     }
 
     async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
-        CURRENT_GRAPHICS.lock().await.replace(graphics.clone());
-
         GALACTIC_UNICORN
             .lock()
             .await
             .as_mut()
             .unwrap()
             .set_pixels(graphics);
+
+        CURRENT_GRAPHICS.lock().await.replace(*graphics);
     }
 
     async fn redraw_graphics() {
@@ -385,10 +337,12 @@ pub mod display {
         graphics: &mut UnicornGraphics<WIDTH, HEIGHT>,
         message: &mut DisplayGraphicsMessage,
     ) {
-        message.set_first_shown();
-
         graphics.set_pixels(message.pixels);
         set_graphics(graphics).await;
+
+        message.set_first_shown();
+
+        Timer::after_millis(1).await;
 
         loop {
             if message.has_min_duration_passed() || STOP_CURRENT_DISPLAY.signaled() {
@@ -510,16 +464,6 @@ pub mod display {
             }
 
             if !is_message_replaced {
-                match SYSTEM_DISPLAY_CHANNEL.try_receive() {
-                    Ok(value) => {
-                        is_message_replaced = true;
-                        message.replace(value);
-                    }
-                    Err(_) => {}
-                }
-            }
-
-            if !is_message_replaced {
                 match APP_DISPLAY_CHANNEL.try_receive() {
                     Ok(value) => {
                         is_message_replaced = true;
@@ -595,13 +539,13 @@ pub mod display {
         loop {
             let message = subscriber.next_message_pure().await;
 
-            if message.topic.contains(BRIGHTNESS_TOPIC) {
+            if message.topic == BRIGHTNESS_SET_TOPIC {
                 let brightness: u8 = match message.body.parse() {
                     Ok(value) => value,
                     Err(_) => 255,
                 };
                 set_brightness(brightness).await;
-            } else if message.topic.contains(RGB_TOPIC) {
+            } else if message.topic == RGB_SET_TOPIC {
                 let mut r = String::<3>::new();
                 let mut g = String::<3>::new();
                 let mut b = String::<3>::new();

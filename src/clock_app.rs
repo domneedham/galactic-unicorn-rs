@@ -12,7 +12,7 @@ use embedded_graphics::{
 use embedded_graphics_core::Drawable;
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use heapless::{String, Vec};
-use micromath::F32Ext as _; // needed for rem_euclid, floor, abs and round
+use micromath::F32Ext;
 use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
@@ -20,7 +20,7 @@ use crate::{
     app::UnicornApp,
     buttons::ButtonPress,
     fonts,
-    mqtt::MqttMessage,
+    mqtt::{topics::CLOCK_APP_STATE_TOPIC, MqttMessage},
     time::Time,
     unicorn::{
         self,
@@ -50,7 +50,7 @@ impl ClockApp {
 
     pub async fn set_effect(&self, effect: ClockEffect) {
         *self.effect.lock().await = effect;
-        self.send_state().await;
+        self.send_mqtt_state().await;
     }
 
     pub async fn get_date_str(&self) -> String<12> {
@@ -149,10 +149,10 @@ impl UnicornApp for ClockApp {
             Self::draw_numbers(&mut gr, second, 28, color);
 
             Rectangle::new(
-                Point { x: 41, y: 3 },
+                Point { x: 42, y: 3 },
                 Size {
                     height: 8,
-                    width: 12,
+                    width: 11,
                 },
             )
             .into_styled(white_style)
@@ -160,10 +160,10 @@ impl UnicornApp for ClockApp {
             .unwrap();
 
             Rectangle::new(
-                Point { x: 41, y: 0 },
+                Point { x: 42, y: 0 },
                 Size {
                     height: 3,
-                    width: 12,
+                    width: 11,
                 },
             )
             .into_styled(red_style)
@@ -173,7 +173,7 @@ impl UnicornApp for ClockApp {
             let day = self.get_day_str().await;
             Text::new(
                 &day,
-                Point { x: 42, y: 9 },
+                Point { x: 43, y: 9 },
                 MonoTextStyle::new(&FONT_5X7, Rgb888::RED),
             )
             .draw(&mut gr)
@@ -207,7 +207,7 @@ impl UnicornApp for ClockApp {
                         hue_offset += 0.01;
 
                         let duration = embassy_time::Duration::from_millis(50);
-                        DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
+                        DisplayGraphicsMessage::from_app(gr.get_pixels(), duration)
                             .send_and_replace_queue()
                             .await;
                         Timer::after(duration).await;
@@ -215,7 +215,7 @@ impl UnicornApp for ClockApp {
                 }
                 ClockEffect::Color => {
                     let duration = embassy_time::Duration::from_millis(250);
-                    DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
+                    DisplayGraphicsMessage::from_app(gr.get_pixels(), duration)
                         .send_and_replace_queue()
                         .await;
                     Timer::after(duration).await;
@@ -259,10 +259,10 @@ impl UnicornApp for ClockApp {
         }
     }
 
-    async fn send_state(&self) {
+    async fn send_mqtt_state(&self) {
         let effect = *self.effect.lock().await;
         let text = effect.into();
-        MqttMessage::enqueue_state("app/clock/state", text).await;
+        MqttMessage::enqueue_state(CLOCK_APP_STATE_TOPIC, text).await;
     }
 }
 

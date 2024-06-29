@@ -49,7 +49,7 @@ impl UnicornApp for EffectsApp {
 
     async fn process_mqtt_message(&self, _: crate::mqtt::MqttReceiveMessage) {}
 
-    async fn send_state(&self) {}
+    async fn send_mqtt_state(&self) {}
 }
 
 mod effects {
@@ -120,12 +120,9 @@ mod effects {
                     }
                 }
 
-                DisplayGraphicsMessage::from_app(
-                    graphics.get_pixels(),
-                    Some(Duration::from_millis(50)),
-                )
-                .send()
-                .await;
+                DisplayGraphicsMessage::from_app(graphics.get_pixels(), Duration::from_millis(50))
+                    .send()
+                    .await;
 
                 // clear the bottom row and then add a new fire seed to it
                 for x in 0..53 {
