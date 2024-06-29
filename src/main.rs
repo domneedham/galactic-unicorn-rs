@@ -66,10 +66,10 @@ async fn main(spawner: Spawner) {
     unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
 
     let app_state = make_static!(system::AppState::new());
-    let system_app = make_static!(system_app::SystemApp::new());
+    let system_app = system_app::SystemApp::new();
     let time = make_static!(time::Time::new());
-    let clock_app = make_static!(clock_app::ClockApp::new(time));
-    let effects_app = make_static!(effects_app::EffectsApp::new());
+    let clock_app = clock_app::ClockApp::new(time);
+    let effects_app = effects_app::EffectsApp::new();
     let mqtt_app = make_static!(mqtt_app::MqttApp::new());
 
     let app_controller = app::AppController::new(

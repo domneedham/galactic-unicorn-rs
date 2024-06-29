@@ -28,41 +28,79 @@ use crate::system_app::SystemApp;
 use crate::unicorn;
 use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
 
+/// Signal for an app change for the display task.
 static CHANGE_APP: Signal<ThreadModeRawMutex, Apps> = Signal::new();
 
+/// All apps that can be switched to.
 #[derive(Copy, Clone, PartialEq, Eq, EnumString, IntoStaticStr)]
 #[strum(ascii_case_insensitive)]
 enum Apps {
+    /// The system app. This should only be changed to by the system.
     System,
+
+    /// The clock app.
     Clock,
+
+    /// The effects app.
     Effects,
+
+    /// The MQTT app.
     Mqtt,
 }
 
 pub trait UnicornApp {
+    /// The main display loop for this app.
     async fn display(&self);
 
+    /// Start the app. Is called just before display.
     async fn start(&self);
+
+    /// Stop the app. Is called just before display is cancelled.
     async fn stop(&self);
 
+    /// Handle a user button press for this app.
     async fn button_press(&self, press: ButtonPress);
 
+    /// Process MQTT messages for this app. Can be called whilst not active.
     async fn process_mqtt_message(&self, message: MqttReceiveMessage);
+
+    /// Send MQTT state for this app. Can be called whilst not active.
     async fn send_mqtt_state(&self);
 }
 
+/// App controller is responsible for managing apps by:
+/// - Starting and stopping apps on user selection
+/// - Starting and stopping apps from MQTT
+/// - Forwarding button presses to active apps
 pub struct AppController {
+    /// The current active app.
     active_app: Mutex<ThreadModeRawMutex, Apps>,
+
+    /// The previous active app.
     previous_app: Mutex<ThreadModeRawMutex, Apps>,
+
+    /// System app.
     system_app: &'static SystemApp,
+
+    /// Clock app.
     clock_app: &'static ClockApp,
+
+    /// Effects app.
     effects_app: &'static EffectsApp,
+
+    /// MQTT app.
     mqtt_app: &'static MqttApp,
+
+    /// App state.
     app_state: &'static AppState,
+
+    /// Embassy spawner.
     spawner: Spawner,
 }
 
 impl AppController {
+    /// Create the static ref to app controller.
+    /// Must only be called once or will panic.
     pub fn new(
         system_app: &'static SystemApp,
         clock_app: &'static ClockApp,
@@ -87,11 +125,13 @@ impl AppController {
         controller
     }
 
+    /// Start the embassy tasks.
     fn init(&'static self) {
         self.spawner.spawn(display_task(self)).unwrap();
         self.spawner.spawn(process_state_change_task(self)).unwrap();
     }
 
+    /// The main program loop.
     pub async fn run_forever(&'static self) -> ! {
         loop {
             let (app, press): (Apps, ButtonPress) = match select3(
@@ -123,6 +163,7 @@ impl AppController {
         }
     }
 
+    /// Send MQTT states from each app.
     pub async fn send_mqtt_states(&self) {
         let active_app = *self.active_app.lock().await;
         let app_text = active_app.into();
@@ -133,6 +174,7 @@ impl AppController {
         self.mqtt_app.send_mqtt_state().await;
     }
 
+    /// Change the current app by stopping the current and starting the new chosen app.
     async fn change_app(&self, new_app: Apps) {
         let mut current_app = *self.active_app.lock().await;
 
@@ -162,6 +204,7 @@ impl AppController {
     }
 }
 
+/// Process MQTT messages related to app functionality.
 #[embassy_executor::task]
 pub async fn process_mqtt_messages_task(
     app_controller: &'static AppController,
@@ -187,6 +230,7 @@ pub async fn process_mqtt_messages_task(
     }
 }
 
+/// Process state changes from app state.
 #[embassy_executor::task]
 async fn process_state_change_task(app_controller: &'static AppController) {
     loop {
@@ -209,6 +253,7 @@ async fn process_state_change_task(app_controller: &'static AppController) {
     }
 }
 
+/// Run the display function of the active app.  
 #[embassy_executor::task]
 async fn display_task(app_controller: &'static AppController) {
     let mut blank_graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
