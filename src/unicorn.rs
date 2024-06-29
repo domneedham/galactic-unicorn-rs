@@ -189,16 +189,13 @@ pub mod display {
 
     pub struct DisplayGraphicsMessage {
         pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
-        duration: Option<Duration>,
+        duration: Duration,
         first_shown: Option<Instant>,
         channel: DisplayChannels,
     }
 
     impl DisplayGraphicsMessage {
-        pub fn from_app(
-            pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>,
-            duration: Option<Duration>,
-        ) -> Self {
+        pub fn from_app(pixels: UnicornGraphicsPixels<WIDTH, HEIGHT>, duration: Duration) -> Self {
             Self {
                 pixels,
                 duration,
@@ -216,15 +213,11 @@ pub mod display {
         }
 
         pub fn has_min_duration_passed(&self) -> bool {
-            if self.duration.is_none() {
-                return true;
-            }
-
             if self.first_shown.is_none() {
                 return false;
             }
 
-            self.first_shown.unwrap().elapsed() > self.duration.unwrap()
+            self.first_shown.unwrap().elapsed() > self.duration
         }
     }
 
@@ -321,14 +314,14 @@ pub mod display {
     }
 
     async fn set_graphics(graphics: &UnicornGraphics<WIDTH, HEIGHT>) {
-        CURRENT_GRAPHICS.lock().await.replace(graphics.clone());
-
         GALACTIC_UNICORN
             .lock()
             .await
             .as_mut()
             .unwrap()
             .set_pixels(graphics);
+
+        CURRENT_GRAPHICS.lock().await.replace(*graphics);
     }
 
     async fn redraw_graphics() {
@@ -344,10 +337,12 @@ pub mod display {
         graphics: &mut UnicornGraphics<WIDTH, HEIGHT>,
         message: &mut DisplayGraphicsMessage,
     ) {
-        message.set_first_shown();
-
         graphics.set_pixels(message.pixels);
         set_graphics(graphics).await;
+
+        message.set_first_shown();
+
+        Timer::after_millis(1).await;
 
         loop {
             if message.has_min_duration_passed() || STOP_CURRENT_DISPLAY.signaled() {

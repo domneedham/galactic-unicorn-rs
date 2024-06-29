@@ -207,7 +207,7 @@ impl UnicornApp for ClockApp {
                         hue_offset += 0.01;
 
                         let duration = embassy_time::Duration::from_millis(50);
-                        DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
+                        DisplayGraphicsMessage::from_app(gr.get_pixels(), duration)
                             .send_and_replace_queue()
                             .await;
                         Timer::after(duration).await;
@@ -215,7 +215,7 @@ impl UnicornApp for ClockApp {
                 }
                 ClockEffect::Color => {
                     let duration = embassy_time::Duration::from_millis(250);
-                    DisplayGraphicsMessage::from_app(gr.get_pixels(), Some(duration))
+                    DisplayGraphicsMessage::from_app(gr.get_pixels(), duration)
                         .send_and_replace_queue()
                         .await;
                     Timer::after(duration).await;

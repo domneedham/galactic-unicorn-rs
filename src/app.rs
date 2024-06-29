@@ -199,12 +199,6 @@ async fn process_state_change_task(app_controller: &'static AppController) {
                 match app_controller.app_state.get_network_state().await {
                     NetworkState::NotInitialised => {}
                     NetworkState::Connected => {
-                        let current_app = *app_controller.active_app.lock().await;
-
-                        if current_app == Apps::System {
-                            app_controller.system_app.prepare_for_app_change().await;
-                        }
-
                         let previous_app = *app_controller.previous_app.lock().await;
                         app_controller.change_app(previous_app).await;
                     }
@@ -238,11 +232,8 @@ async fn display_task(app_controller: &'static AppController) {
 
         unicorn::display::STOP_CURRENT_DISPLAY.signal(true);
         // when switching between apps we want to clear the old queue and blank the display ..
-        DisplayGraphicsMessage::from_app(
-            blank_graphics.get_pixels(),
-            Some(Duration::from_millis(10)),
-        )
-        .send_and_replace_queue()
-        .await;
+        DisplayGraphicsMessage::from_app(blank_graphics.get_pixels(), Duration::from_millis(10))
+            .send_and_replace_queue()
+            .await;
     }
 }
