@@ -22,7 +22,6 @@ use embassy_executor::Spawner;
 use embassy_rp::gpio::{Input, Pull};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
-use static_cell::make_static;
 
 use defmt_rtt as _;
 use panic_halt as _;
@@ -65,12 +64,12 @@ async fn main(spawner: Spawner) {
 
     unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
 
-    let app_state = make_static!(system::AppState::new());
+    let app_state = system::SystemState::new();
     let system_app = system_app::SystemApp::new();
-    let time = make_static!(time::Time::new());
+    let time = time::Time::new();
     let clock_app = clock_app::ClockApp::new(time);
     let effects_app = effects_app::EffectsApp::new();
-    let mqtt_app = make_static!(mqtt_app::MqttApp::new());
+    let mqtt_app = mqtt_app::MqttApp::new();
 
     let app_controller = app::AppController::new(
         system_app,

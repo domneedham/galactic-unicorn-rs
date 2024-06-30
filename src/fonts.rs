@@ -2,40 +2,41 @@ use embedded_graphics::{geometry::Point, pixelcolor::Rgb888};
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use unicorn_graphics::UnicornGraphics;
 
-pub fn draw_str(
-    gr: &mut UnicornGraphics<WIDTH, HEIGHT>,
-    text: &str,
-    mut start: u32,
-    color: Rgb888,
-) {
-    for character in text.chars() {
-        draw_char(gr, character, start, color);
-        start += 7;
+/// Trait for drawing text onto a `UnicornGraphics` instance.
+pub trait DrawOntoGraphics {
+    /// Draw self onto the graphics buffer, starting from `start` and in color of `color`.
+    fn draw(&self, gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888);
+}
+
+impl DrawOntoGraphics for &str {
+    fn draw(&self, gr: &mut UnicornGraphics<WIDTH, HEIGHT>, mut start: u32, color: Rgb888) {
+        for character in self.chars() {
+            character.draw(gr, start, color);
+            start += 7;
+        }
     }
 }
 
-pub fn draw_char(
-    gr: &mut UnicornGraphics<WIDTH, HEIGHT>,
-    character: char,
-    start: u32,
-    color: Rgb888,
-) {
-    match character {
-        '0' => draw_zero(gr, start, color),
-        '1' => draw_one(gr, start, color),
-        '2' => draw_two(gr, start, color),
-        '3' => draw_three(gr, start, color),
-        '4' => draw_four(gr, start, color),
-        '5' => draw_five(gr, start, color),
-        '6' => draw_six(gr, start, color),
-        '7' => draw_seven(gr, start, color),
-        '8' => draw_eight(gr, start, color),
-        '9' => draw_nine(gr, start, color),
-        _ => draw_eight(gr, start, color),
+impl DrawOntoGraphics for char {
+    fn draw(&self, gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+        match self {
+            '0' => draw_zero(gr, start, color),
+            '1' => draw_one(gr, start, color),
+            '2' => draw_two(gr, start, color),
+            '3' => draw_three(gr, start, color),
+            '4' => draw_four(gr, start, color),
+            '5' => draw_five(gr, start, color),
+            '6' => draw_six(gr, start, color),
+            '7' => draw_seven(gr, start, color),
+            '8' => draw_eight(gr, start, color),
+            '9' => draw_nine(gr, start, color),
+            _ => draw_eight(gr, start, color),
+        }
     }
 }
 
-pub fn draw_zero(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number zero.
+fn draw_zero(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -55,7 +56,8 @@ pub fn draw_zero(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb
     }
 }
 
-pub fn draw_one(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number one.
+fn draw_one(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -85,7 +87,8 @@ pub fn draw_one(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb8
     }
 }
 
-pub fn draw_two(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number two.
+fn draw_two(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -126,7 +129,8 @@ pub fn draw_two(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb8
     }
 }
 
-pub fn draw_three(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number three.
+fn draw_three(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -157,7 +161,8 @@ pub fn draw_three(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rg
     }
 }
 
-pub fn draw_four(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number four.
+fn draw_four(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -188,7 +193,8 @@ pub fn draw_four(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb
     }
 }
 
-pub fn draw_five(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number five.
+fn draw_five(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -223,7 +229,8 @@ pub fn draw_five(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb
     }
 }
 
-pub fn draw_six(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number six.
+fn draw_six(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -256,7 +263,8 @@ pub fn draw_six(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb8
     }
 }
 
-pub fn draw_seven(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number seven.
+fn draw_seven(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         gr.set_pixel(get_point(x, 0), color);
@@ -283,7 +291,8 @@ pub fn draw_seven(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rg
     }
 }
 
-pub fn draw_eight(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number eight.
+fn draw_eight(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -304,7 +313,8 @@ pub fn draw_eight(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rg
     }
 }
 
-pub fn draw_nine(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
+/// Draw the number nine.
+fn draw_nine(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb888) {
     let end = start + 6;
     for x in start..end {
         for y in 0..11 {
@@ -335,6 +345,7 @@ pub fn draw_nine(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, start: u32, color: Rgb
     }
 }
 
+/// Get a point with casting from u32 to i32.
 fn get_point(x: u32, y: u32) -> Point {
     Point {
         x: x as i32,

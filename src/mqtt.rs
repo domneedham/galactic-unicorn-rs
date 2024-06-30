@@ -10,9 +10,11 @@ use heapless::String;
 use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 use topics::DEBUG_TOPIC;
 
+/// MQTT messages channel to be sent to the broker.
 static SEND_CHANNEL: Channel<ThreadModeRawMutex, MutexGuard<ThreadModeRawMutex, MqttMessage>, 4> =
     Channel::new();
 
+/// A pool of messages that can be reused to send into the `SEND_CHANNEL`.
 static MESSAGE_POOL: [Mutex<ThreadModeRawMutex, MqttMessage>; 4] = [
     Mutex::new(MqttMessage::new()),
     Mutex::new(MqttMessage::new()),
@@ -20,6 +22,7 @@ static MESSAGE_POOL: [Mutex<ThreadModeRawMutex, MqttMessage>; 4] = [
     Mutex::new(MqttMessage::new()),
 ];
 
+/// Message to be sent to the MQTT broker.
 pub struct MqttMessage {
     topic: &'static str,
     text: String<512>,
@@ -28,6 +31,7 @@ pub struct MqttMessage {
 }
 
 impl MqttMessage {
+    /// Create a new MQTT message.
     const fn new() -> Self {
         MqttMessage {
             topic: "",
@@ -37,6 +41,7 @@ impl MqttMessage {
         }
     }
 
+    /// Internal reuse of a MQTT message.
     fn reuse(&mut self, topic: &'static str, content: &str, qos: QualityOfService, retain: bool) {
         self.topic = topic;
         self.text.clear();
@@ -45,14 +50,17 @@ impl MqttMessage {
         self.retain = retain;
     }
 
+    /// Add a state message into the send queue.
     pub async fn enqueue_state(topic: &'static str, content: &str) {
         Self::enqueue(topic, content, QualityOfService::QoS0, false).await;
     }
 
+    /// Add a debug message into the send queue.
     pub async fn enqueue_debug(content: &str) {
         Self::enqueue(DEBUG_TOPIC, content, QualityOfService::QoS0, false).await;
     }
 
+    /// Add a message into the send queue.
     pub async fn enqueue(topic: &'static str, content: &str, qos: QualityOfService, retain: bool) {
         let mut queued = false;
         while !queued {
@@ -77,6 +85,7 @@ impl MqttMessage {
     }
 }
 
+/// Message that is received from the MQTT broker.
 #[derive(Clone)]
 pub struct MqttReceiveMessage {
     pub topic: String<64>,
@@ -84,6 +93,7 @@ pub struct MqttReceiveMessage {
 }
 
 impl MqttReceiveMessage {
+    /// Create a new message from the content received.
     pub fn new(topic: &str, body_bytes: &[u8]) -> Self {
         let mut h_topic = heapless::String::<64>::new();
         write!(h_topic, "{topic}").unwrap();
@@ -163,12 +173,19 @@ pub mod clients {
         MQTT_BROKER_A4, MQTT_BROKER_PORT, MQTT_PASSWORD, MQTT_USERNAME,
     };
 
+    /// Signal for when the send client has an error.
     pub static SEND_CLIENT_ERROR: Signal<ThreadModeRawMutex, bool> = Signal::new();
+
+    /// Signal for when the receive client has an error.
     pub static RECEIVE_CLIENT_ERROR: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
+    /// Buffer size for the embassy net socket.
     const SOCKET_BUF_SIZE: usize = 2048;
+
+    /// Buffer size for the mqtt client.
     const CLIENT_BUF_SIZE: usize = 512;
 
+    /// Create an MQTT client and connect it to the broker.
     async fn create_client<'a>(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
         client_type: &'static str,
@@ -211,6 +228,7 @@ pub mod clients {
         client
     }
 
+    /// Send client for MQTT messages. Polls the `SEND_CHANNEL` to know when to send a message.
     #[embassy_executor::task]
     pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
@@ -266,6 +284,7 @@ pub mod clients {
         }
     }
 
+    /// Receive client for MQTT messages. Publishes into the relevent publisher.
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
@@ -347,6 +366,7 @@ pub mod clients {
         }
     }
 
+    /// Turn the `ReasonCode` into a &str.
     fn get_reason_code(code: ReasonCode) -> &'static str {
         match code {
             ReasonCode::Success => "Success",
@@ -400,6 +420,7 @@ pub mod clients {
         }
     }
 
+    /// Send the `ReasonCode` as a debug message.
     async fn send_reason_code(code: ReasonCode) {
         let message = get_reason_code(code);
         MqttMessage::enqueue_debug(message).await;
@@ -426,10 +447,13 @@ pub mod homeassistant {
 
     pub const HASS_STATUS_TOPIC: &str = concat!(HASS_BASE_MQTT_TOPIC, "/", STATUS);
 
+    /// Channel that messages from home assistant MQTT will be published in to.
     pub static HASS_RECIEVE_CHANNEL: Channel<ThreadModeRawMutex, MqttReceiveMessage, 2> =
         Channel::new();
 
+    /// Send the home assistant discovery messages to auto configure the device.
     async fn send_home_assistant_discovery() {
+        // clock effect
         let topic = concat!(
             HASS_BASE_MQTT_TOPIC,
             "/select/",
@@ -457,6 +481,7 @@ pub mod homeassistant {
         .unwrap();
         MqttMessage::enqueue_hass(topic, &payload).await;
 
+        // active app
         let topic = concat!(
             HASS_BASE_MQTT_TOPIC,
             "/select/",
@@ -481,6 +506,7 @@ pub mod homeassistant {
         .unwrap();
         MqttMessage::enqueue_hass(topic, &payload).await;
 
+        // MQTT text message (as a notification from home assistant)
         let topic = concat!(
             HASS_BASE_MQTT_TOPIC,
             "/notify/",
@@ -503,6 +529,7 @@ pub mod homeassistant {
         .unwrap();
         MqttMessage::enqueue_hass(topic, &payload).await;
 
+        // display color and brightness
         let topic = concat!(HASS_BASE_MQTT_TOPIC, "/light/", DEVICE_ID, "/board/config");
         let mut payload = String::<512>::new();
         write!(
@@ -526,6 +553,7 @@ pub mod homeassistant {
         .unwrap();
         MqttMessage::enqueue_hass(topic, &payload).await;
 
+        // force sync to NTP
         let topic = concat!(
             HASS_BASE_MQTT_TOPIC,
             "/button/",
@@ -549,6 +577,7 @@ pub mod homeassistant {
         MqttMessage::enqueue_hass(topic, &payload).await;
     }
 
+    /// Send app states over MQTT.
     async fn send_states(app_controller: &'static AppController) {
         send_brightness_state().await;
         send_color_state().await;
@@ -556,11 +585,13 @@ pub mod homeassistant {
     }
 
     impl MqttMessage {
+        /// Add a home assistant message into the send queue.
         async fn enqueue_hass(topic: &'static str, content: &str) {
             Self::enqueue(topic, content, QualityOfService::QoS0, false).await;
         }
     }
 
+    /// Waits for an MQTT message for home assistant status and will republish discovery snd state.
     #[embassy_executor::task]
     pub async fn hass_discovery_task(app_controller: &'static AppController) {
         send_home_assistant_discovery().await;

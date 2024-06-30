@@ -23,7 +23,7 @@ use crate::mqtt::{
 };
 use crate::mqtt_app::MqttApp;
 use crate::network::NetworkState;
-use crate::system::{AppState, StateUpdates, STATE_CHANGED};
+use crate::system::{StateUpdates, SystemState, STATE_CHANGED};
 use crate::system_app::SystemApp;
 use crate::unicorn;
 use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
@@ -91,8 +91,8 @@ pub struct AppController {
     /// MQTT app.
     mqtt_app: &'static MqttApp,
 
-    /// App state.
-    app_state: &'static AppState,
+    /// System state.
+    system_state: &'static SystemState,
 
     /// Embassy spawner.
     spawner: Spawner,
@@ -106,7 +106,7 @@ impl AppController {
         clock_app: &'static ClockApp,
         effects_app: &'static EffectsApp,
         mqtt_app: &'static MqttApp,
-        app_state: &'static AppState,
+        system_state: &'static SystemState,
         spawner: Spawner,
     ) -> &'static Self {
         let controller = make_static!(Self {
@@ -116,7 +116,7 @@ impl AppController {
             clock_app,
             effects_app,
             mqtt_app,
-            app_state,
+            system_state,
             spawner,
         });
 
@@ -240,7 +240,7 @@ async fn process_state_change_task(app_controller: &'static AppController) {
 
         match state_update {
             StateUpdates::Network => {
-                match app_controller.app_state.get_network_state().await {
+                match app_controller.system_state.get_network_state().await {
                     NetworkState::NotInitialised => {}
                     NetworkState::Connected => {
                         let previous_app = *app_controller.previous_app.lock().await;

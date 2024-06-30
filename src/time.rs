@@ -2,18 +2,24 @@ use chrono::{DateTime, Duration};
 use chrono_tz::{Tz, GB};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::Instant;
+use static_cell::make_static;
 
+/// Hold a reference to the time state that can be updated via an NTP task.
 pub struct Time {
+    /// The time last pulled from NTP.
     sys_start: Mutex<CriticalSectionRawMutex, DateTime<Tz>>,
 }
 
 impl Time {
-    pub fn new() -> Self {
-        Self {
+    /// Create the static ref to time state.
+    /// Must only be called once or will panic.
+    pub fn new() -> &'static Self {
+        make_static!(Self {
             sys_start: Mutex::new(DateTime::UNIX_EPOCH.with_timezone(&GB)),
-        }
+        })
     }
 
+    /// Set the current time.
     pub async fn set_time(&self, now: DateTime<Tz>) {
         let mut sys_start = self.sys_start.lock().await;
         let elapsed = Instant::now().as_millis();
@@ -22,6 +28,7 @@ impl Time {
             .expect("sys_start greater as current_ts");
     }
 
+    /// Get the current time.
     pub async fn now(&self) -> DateTime<Tz> {
         let sys_start = self.sys_start.lock().await;
         let elapsed = Instant::now().as_millis();
@@ -51,8 +58,10 @@ pub mod ntp {
 
     const POOL_NTP_ADDR: &str = "pool.ntp.org";
 
+    /// Signal for request to sync system with NTP.
     pub static SYNC_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
+    /// Error enum for NTP request.
     #[derive(Error, Debug)]
     pub enum SntpcError {
         #[error("to_socket_addrs")]
@@ -82,11 +91,13 @@ pub mod ntp {
         }
     }
 
+    /// UdpSocket wrapper for NTP.
     struct NtpSocket<'a> {
         sock: UdpSocket<'a>,
     }
 
     impl<'a> NtpUdpSocket for NtpSocket<'a> {
+        /// Send buffer via socket.
         async fn send_to<T: ToSocketAddrs + Send>(
             &self,
             buf: &[u8],
@@ -104,6 +115,7 @@ pub mod ntp {
             Ok(buf.len())
         }
 
+        /// Receive data from socket.
         async fn recv_from(&self, buf: &mut [u8]) -> sntpc::Result<(usize, SocketAddr)> {
             match self.sock.recv_from(buf).await {
                 Ok((size, ip_endpoint)) => Ok((size, emb_endpoint_to_sock_addr(ip_endpoint))),
@@ -120,6 +132,7 @@ pub mod ntp {
         }
     }
 
+    /// Convert embassy `IpEndpoint` into `SocketAddr`.
     fn emb_endpoint_to_sock_addr(endpoint: IpEndpoint) -> SocketAddr {
         let port = endpoint.port;
         let addr = match endpoint.addr {
@@ -133,6 +146,7 @@ pub mod ntp {
         SocketAddr::new(addr, port)
     }
 
+    /// Convert `SocketAddr` into embassy `IpEndpoint`.
     fn sock_addr_to_emb_endpoint(sock_addr: SocketAddr) -> IpEndpoint {
         let port = sock_addr.port();
         let addr = match sock_addr {
@@ -145,12 +159,14 @@ pub mod ntp {
         IpEndpoint::new(addr, port)
     }
 
+    /// Timestamp generator.
     #[derive(Copy, Clone)]
     struct TimestampGen {
         now: DateTime<Tz>,
     }
 
     impl TimestampGen {
+        /// Take time and convert into timestamp generator.
         async fn new(clock: &Time) -> Self {
             let now = clock.now().await;
             Self { now }
@@ -158,17 +174,21 @@ pub mod ntp {
     }
 
     impl NtpTimestampGenerator for TimestampGen {
+        /// Init self.
         fn init(&mut self) {}
 
+        /// Get the timestamp as seconds.
         fn timestamp_sec(&self) -> u64 {
             self.now.timestamp() as u64
         }
 
+        /// Get the timestamp subsec micros.
         fn timestamp_subsec_micros(&self) -> u32 {
             self.now.timestamp_subsec_micros()
         }
     }
 
+    /// NTP task for syncing to NTP.
     #[embassy_executor::task]
     pub async fn ntp_worker(stack: &'static Stack<cyw43::NetDriver<'static>>, time: &'static Time) {
         loop {
@@ -182,6 +202,7 @@ pub mod ntp {
         }
     }
 
+    /// Create an NTP request and set the value in `Time`.
     async fn ntp_request(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
         time: &'static Time,

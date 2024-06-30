@@ -20,7 +20,7 @@ use unicorn_graphics::UnicornGraphics;
 use crate::{
     app::UnicornApp,
     buttons::ButtonPress,
-    fonts,
+    fonts::DrawOntoGraphics,
     mqtt::{topics::CLOCK_APP_STATE_TOPIC, MqttMessage},
     time::Time,
     unicorn::{
@@ -142,7 +142,7 @@ impl ClockApp {
             let _ = write!(num_str, "{num}");
         }
 
-        fonts::draw_str(gr, &num_str, start, color);
+        &num_str.draw(gr, start, color);
     }
 
     /// Turn hsv color into `Rgb888`.
