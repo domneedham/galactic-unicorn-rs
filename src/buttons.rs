@@ -198,6 +198,7 @@ where
     }
 }
 
+/// Publish the button press to the correct signal.
 fn publish_to_channel(press: ButtonPress, button_type: &UnicornButtons) {
     match button_type {
         UnicornButtons::SwitchA => SWITCH_A_PRESS.signal(press),

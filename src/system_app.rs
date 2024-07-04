@@ -6,11 +6,12 @@ use embedded_graphics::{
 };
 use embedded_graphics_core::Drawable;
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
+use static_cell::make_static;
 use unicorn_graphics::UnicornGraphics;
 
 use crate::{
-    app::UnicornApp, buttons::ButtonPress, mqtt::MqttReceiveMessage,
-    unicorn::display::DisplayGraphicsMessage,
+    app::UnicornApp, buttons::ButtonPress, display::messages::DisplayGraphicsMessage,
+    mqtt::MqttReceiveMessage,
 };
 
 use micromath::F32Ext;
@@ -18,27 +19,41 @@ use micromath::F32Ext;
 pub struct SystemApp;
 
 impl SystemApp {
-    pub fn new() -> Self {
-        Self {}
+    /// Create the static ref to system app.
+    /// Must only be called once or will panic.
+    pub fn new() -> &'static Self {
+        make_static!(Self {})
     }
-}
 
-const MAX_POSITION: f32 = (HEIGHT as i32 - 5) as f32;
+    /// Linear interpolation function.
+    /// It linearly interpolates between a and b based on the value of t.
+    ///
+    /// a: The starting value.
+    /// b: The ending value.
+    /// t: The interpolation factor (between 0.0 and 1.0).
+    fn lerp(a: f32, b: f32, t: f32) -> f32 {
+        a + (b - a) * t
+    }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
+    /// Ease in cubic function.
+    ///
+    /// Cube the input to make a gradual increase.
+    fn ease_in(t: f32) -> f32 {
+        t * t * t
+    }
 
-fn ease_in(t: f32) -> f32 {
-    t * t * t
-}
-
-fn ease_out(t: f32) -> f32 {
-    1.0 - (1.0 - t) * (1.0 - t)
+    /// Ease out cubic function.
+    ///
+    /// Calculates 1 minus (1 minus t) squared, which provides a gradual decrease in easing from 1 to 0.
+    fn ease_out(t: f32) -> f32 {
+        1.0 - (1.0 - t) * (1.0 - t)
+    }
 }
 
 impl UnicornApp for SystemApp {
     async fn display(&self) {
+        const MAX_POSITION: f32 = (HEIGHT as i32 - 5) as f32;
+
         let mut graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
 
         let style = PrimitiveStyleBuilder::new()
@@ -59,23 +74,23 @@ impl UnicornApp for SystemApp {
             let progress = (elapsed_millis / ANIMATION_DURATION).min(1.0);
 
             // left circle
-            let eased_progress = ease_in(progress);
-            let animated_value = lerp(min_value, max_value, eased_progress);
+            let eased_progress = Self::ease_in(progress);
+            let animated_value = Self::lerp(min_value, max_value, eased_progress);
             Circle::new(Point::new(10, animated_value.floor() as i32), 5)
                 .into_styled(style)
                 .draw(&mut graphics)
                 .unwrap();
 
             // center circle
-            let animated_value = lerp(min_value, max_value, progress);
+            let animated_value = Self::lerp(min_value, max_value, progress);
             Circle::new(Point::new(24, animated_value.floor() as i32), 5)
                 .into_styled(style)
                 .draw(&mut graphics)
                 .unwrap();
 
             // right circle
-            let eased_progress = ease_out(progress);
-            let animated_value = lerp(min_value, max_value, eased_progress);
+            let eased_progress = Self::ease_out(progress);
+            let animated_value = Self::lerp(min_value, max_value, eased_progress);
             Circle::new(Point::new(38, animated_value.floor() as i32), 5)
                 .into_styled(style)
                 .draw(&mut graphics)

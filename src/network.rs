@@ -15,9 +15,10 @@ use static_cell::StaticCell;
 use crate::{
     config::*,
     mqtt::clients::{RECEIVE_CLIENT_ERROR, SEND_CLIENT_ERROR},
-    system::AppState,
+    system::SystemState,
 };
 
+/// Network states.
 #[derive(Clone, Copy)]
 pub enum NetworkState {
     NotInitialised,
@@ -29,6 +30,7 @@ bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
 });
 
+/// Cyw43 runner task.
 #[embassy_executor::task]
 async fn wifi_task(
     runner: cyw43::Runner<
@@ -40,14 +42,16 @@ async fn wifi_task(
     runner.run().await
 }
 
+/// Embassy net stack runner task.
 #[embassy_executor::task]
 async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
     stack.run().await
 }
 
+/// Create and join the wifi network. Will wait until it has successfully joined.
 pub async fn create_and_join_network(
     spawner: Spawner,
-    app_state: &'static AppState,
+    app_state: &'static SystemState,
     pin_23: PIN_23,
     pin_24: PIN_24,
     pin_25: PIN_25,
@@ -120,8 +124,10 @@ pub async fn create_and_join_network(
     stack
 }
 
+/// Wait for messages from MQTT clients and update network state accordingly.
+/// There is no built in detection for network errors hence the relying on MQTT net stack.
 #[embassy_executor::task]
-async fn monitor_network_task(app_state: &'static AppState) {
+async fn monitor_network_task(app_state: &'static SystemState) {
     let res = match select(SEND_CLIENT_ERROR.wait(), RECEIVE_CLIENT_ERROR.wait()).await {
         Either::First(val) => val,
         Either::Second(val) => val,

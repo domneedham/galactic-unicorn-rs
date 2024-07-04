@@ -13,46 +13,73 @@ use embedded_graphics_core::Drawable;
 use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use heapless::{String, Vec};
 use micromath::F32Ext;
+use static_cell::make_static;
 use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
 use crate::{
     app::UnicornApp,
     buttons::ButtonPress,
-    fonts,
+    display::{
+        messages::{DisplayGraphicsMessage, DisplayTextMessage},
+        Display,
+    },
+    fonts::DrawOntoGraphics,
     mqtt::{topics::CLOCK_APP_STATE_TOPIC, MqttMessage},
     time::Time,
-    unicorn::{
-        self,
-        display::{DisplayGraphicsMessage, DisplayTextMessage},
-    },
 };
 
+/// All the effects that can be displayed on the clock.
 #[derive(Clone, Copy, EnumString, IntoStaticStr)]
 #[strum(ascii_case_insensitive)]
 pub enum ClockEffect {
+    /// An animated rainbow effect.
     Rainbow,
+
+    /// Display the active color.
     Color,
 }
 
+/// Clock app. Display the current time and date.
 pub struct ClockApp {
+    /// Reference to the display.
+    display: &'static Display,
+
+    /// Reference to the time.
     time: &'static Time,
+
+    /// The current effect of the clock.
     effect: Mutex<NoopRawMutex, ClockEffect>,
 }
 
+/// Trait for defining text width constant on the clock app struct.
+trait AlternateTextWidth {
+    /// Width of the clock text.
+    const TEXT_WIDTH: usize;
+}
+
+impl AlternateTextWidth for ClockApp {
+    const TEXT_WIDTH: usize = 41;
+}
+
 impl ClockApp {
-    pub fn new(time: &'static Time) -> Self {
-        Self {
+    /// Create the static ref to clock app.
+    /// Must only be called once or will panic.
+    pub fn new(display: &'static Display, time: &'static Time) -> &'static Self {
+        make_static!(Self {
+            display,
             time,
             effect: Mutex::new(ClockEffect::Color),
-        }
+        })
     }
 
+    /// Set the active effect.
     pub async fn set_effect(&self, effect: ClockEffect) {
         *self.effect.lock().await = effect;
         self.send_mqtt_state().await;
     }
 
+    /// Get the date str in format <day:3> <num:1/2> <mon:3>
     pub async fn get_date_str(&self) -> String<12> {
         let dt = self.time.now().await;
         let day_title = match dt.weekday() {
@@ -85,6 +112,8 @@ impl ClockApp {
         result
     }
 
+    /// Get the current day as a string.
+    /// Will prepend 0 if day is below 10.
     pub async fn get_day_str(&self) -> String<2> {
         let dt = self.time.now().await;
         let day = dt.day();
@@ -98,6 +127,7 @@ impl ClockApp {
         result
     }
 
+    /// Draw a colon at `x` position.
     fn draw_colon(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, x: u32) {
         let x = x as i32;
         gr.set_pixel(Point { x, y: 3 }, Rgb888::new(100, 100, 100));
@@ -106,6 +136,8 @@ impl ClockApp {
         gr.set_pixel(Point { x, y: 8 }, Rgb888::new(100, 100, 100));
     }
 
+    /// Draw the `num` at the `start` position in the `color`.
+    /// Will prepend 0 if the `num` is below 10.
     fn draw_numbers(gr: &mut UnicornGraphics<WIDTH, HEIGHT>, num: u32, start: u32, color: Rgb888) {
         let mut num_str = heapless::String::<4>::new();
         if num < 10 {
@@ -114,14 +146,53 @@ impl ClockApp {
             let _ = write!(num_str, "{num}");
         }
 
-        fonts::draw_str(gr, &num_str, start, color);
+        num_str.as_str().draw(gr, start, color);
+    }
+
+    /// Turn hsv color into `Rgb888`.
+    fn from_hsv(h: f32, s: f32, v: f32) -> Rgb888 {
+        let i = (h * 6.0).floor();
+        let f = h * 6.0 - i;
+        let v = v * 255.0;
+        let p = v * (1.0 - s);
+        let q = v * (1.0 - f * s);
+        let t = v * (1.0 - (1.0 - f) * s);
+
+        let i = i.round() % 6.0;
+        if i == 0.0 {
+            return Rgb888::new(v.round() as u8, t.round() as u8, p.round() as u8);
+        } else if i == 1.0 {
+            return Rgb888::new(q.round() as u8, v.round() as u8, p.round() as u8);
+        } else if i == 2.0 {
+            return Rgb888::new(p.round() as u8, v.round() as u8, t.round() as u8);
+        } else if i == 3.0 {
+            return Rgb888::new(p.round() as u8, q.round() as u8, v.round() as u8);
+        } else if i == 4.0 {
+            return Rgb888::new(t.round() as u8, p.round() as u8, v.round() as u8);
+        } else if i == 5.0 {
+            return Rgb888::new(v.round() as u8, p.round() as u8, q.round() as u8);
+        } else {
+            return Rgb888::new(0, 0, 0);
+        }
+    }
+
+    /// Generate the rainbow colors needed for the rainbow effect.
+    fn generate_rainbow_colors() -> Vec<Rgb888, { Self::TEXT_WIDTH }> {
+        let mut colors = Vec::<Rgb888, { Self::TEXT_WIDTH }>::new();
+
+        for x in 0..Self::TEXT_WIDTH {
+            let color = Self::from_hsv(x as f32 / Self::TEXT_WIDTH as f32, 1.0, 1.0);
+            colors.push(color).unwrap();
+        }
+
+        colors
     }
 }
 
 impl UnicornApp for ClockApp {
     async fn display(&self) {
         let mut hue_offset: f32 = 0.0;
-        let colors = generate_rainbow_colors();
+        let colors = Self::generate_rainbow_colors();
 
         let mut gr = UnicornGraphics::<WIDTH, HEIGHT>::new();
 
@@ -140,7 +211,7 @@ impl UnicornApp for ClockApp {
 
             gr.clear_all();
 
-            let color = *unicorn::display::CURRENT_COLOR.lock().await;
+            let color = self.display.get_color().await;
 
             Self::draw_numbers(&mut gr, hour, 0, color);
             Self::draw_colon(&mut gr, 13);
@@ -182,7 +253,7 @@ impl UnicornApp for ClockApp {
             match effect {
                 ClockEffect::Rainbow => {
                     for _ in 0..20 {
-                        for x in 0..TEXT_WIDTH as u8 {
+                        for x in 0..Self::TEXT_WIDTH as u8 {
                             for y in 0..HEIGHT as u8 {
                                 let point = Point::new(x as i32, y as i32);
                                 if gr.is_match(point, Rgb888::BLACK)
@@ -191,10 +262,10 @@ impl UnicornApp for ClockApp {
                                     continue;
                                 }
 
-                                let mut index = ((x as f32 + (hue_offset * TEXT_WIDTH as f32))
-                                    % TEXT_WIDTH as f32)
-                                    .round()
-                                    as usize;
+                                let mut index =
+                                    ((x as f32 + (hue_offset * Self::TEXT_WIDTH as f32))
+                                        % Self::TEXT_WIDTH as f32)
+                                        .round() as usize;
 
                                 if index >= 41 {
                                     index = 0;
@@ -264,42 +335,4 @@ impl UnicornApp for ClockApp {
         let text = effect.into();
         MqttMessage::enqueue_state(CLOCK_APP_STATE_TOPIC, text).await;
     }
-}
-
-fn from_hsv(h: f32, s: f32, v: f32) -> Rgb888 {
-    let i = (h * 6.0).floor();
-    let f = h * 6.0 - i;
-    let v = v * 255.0;
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - f * s);
-    let t = v * (1.0 - (1.0 - f) * s);
-
-    let i = i.round() % 6.0;
-    if i == 0.0 {
-        return Rgb888::new(v.round() as u8, t.round() as u8, p.round() as u8);
-    } else if i == 1.0 {
-        return Rgb888::new(q.round() as u8, v.round() as u8, p.round() as u8);
-    } else if i == 2.0 {
-        return Rgb888::new(p.round() as u8, v.round() as u8, t.round() as u8);
-    } else if i == 3.0 {
-        return Rgb888::new(p.round() as u8, q.round() as u8, v.round() as u8);
-    } else if i == 4.0 {
-        return Rgb888::new(t.round() as u8, p.round() as u8, v.round() as u8);
-    } else if i == 5.0 {
-        return Rgb888::new(v.round() as u8, p.round() as u8, q.round() as u8);
-    } else {
-        return Rgb888::new(0, 0, 0);
-    }
-}
-
-const TEXT_WIDTH: usize = 41;
-fn generate_rainbow_colors() -> Vec<Rgb888, TEXT_WIDTH> {
-    let mut colors = Vec::<Rgb888, TEXT_WIDTH>::new();
-
-    for x in 0..TEXT_WIDTH {
-        let color = from_hsv(x as f32 / TEXT_WIDTH as f32, 1.0, 1.0);
-        colors.push(color).unwrap();
-    }
-
-    colors
 }

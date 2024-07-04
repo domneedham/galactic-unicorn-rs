@@ -1,23 +1,32 @@
 use embassy_futures::select::select;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex, signal::Signal};
+use static_cell::make_static;
 
 use crate::{app::UnicornApp, buttons::ButtonPress};
 
 use self::effects::{Balls, Effects};
 
+/// Effects app. Show different effects.
 pub struct EffectsApp {
+    /// The current active effect.
     active_effect: Mutex<ThreadModeRawMutex, Effects>,
+
+    /// Signal for swapping effects on a button press.
     swap_effect: Signal<ThreadModeRawMutex, bool>,
+
+    /// Hold a reference to the `Balls` effect.
     balls: Balls,
 }
 
 impl EffectsApp {
-    pub fn new() -> Self {
-        Self {
+    /// Create the static ref to effects app.
+    /// Must only be called once or will panic.
+    pub fn new() -> &'static Self {
+        make_static!(Self {
             active_effect: Mutex::new(Effects::Balls),
             swap_effect: Signal::new(),
             balls: Balls::new(),
-        }
+        })
     }
 }
 
@@ -58,20 +67,25 @@ mod effects {
     use galactic_unicorn_embassy::{HEIGHT, WIDTH};
     use unicorn_graphics::UnicornGraphics;
 
-    use crate::unicorn::display::DisplayGraphicsMessage;
+    use crate::display::messages::DisplayGraphicsMessage;
 
+    /// All the effects that can be displayed.
     #[derive(Clone, Copy)]
     pub enum Effects {
+        /// The balls effect.
         Balls,
     }
 
+    /// Balls effect.
     pub struct Balls;
 
     impl Balls {
+        /// Create a new balls effect.
         pub fn new() -> Self {
             Self {}
         }
 
+        /// Display the balls effect.
         pub async fn display(&self) {
             let mut graphics: UnicornGraphics<WIDTH, HEIGHT> = UnicornGraphics::new();
             let mut heat: [[f32; 13]; 53] = [[0.0; 13]; 53];

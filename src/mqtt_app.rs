@@ -3,27 +3,37 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex, signal::Signal};
 use embassy_time::Duration;
 use heapless::String;
+use static_cell::make_static;
 
 use crate::{
-    app::UnicornApp, buttons::ButtonPress, mqtt::MqttReceiveMessage,
-    unicorn::display::DisplayTextMessage,
+    app::UnicornApp, buttons::ButtonPress, display::messages::DisplayTextMessage,
+    mqtt::MqttReceiveMessage,
 };
 
+/// MQTT app. Will display the latest MQTT message.
 pub struct MqttApp {
+    /// The last message received.
     pub last_message: Mutex<ThreadModeRawMutex, Option<String<64>>>,
+
+    /// Signal to update the message displayed.
     pub update_message: Signal<ThreadModeRawMutex, bool>,
+
+    /// Track if the app is active or not.
     pub is_active: AtomicBool,
 }
 
 impl MqttApp {
-    pub fn new() -> Self {
-        Self {
+    /// Create the static ref to MQTT app.
+    /// Must only be called once or will panic.
+    pub fn new() -> &'static Self {
+        make_static!(Self {
             last_message: Mutex::new(None),
             update_message: Signal::new(),
             is_active: AtomicBool::new(false),
-        }
+        })
     }
 
+    /// Set the last message received from MQTT.
     pub async fn set_last_message(&self, message: String<64>) {
         self.last_message.lock().await.replace(message);
         self.update_message.signal(true);

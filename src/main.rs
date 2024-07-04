@@ -8,6 +8,7 @@ mod app;
 mod buttons;
 mod clock_app;
 mod config;
+mod display;
 mod effects_app;
 mod fonts;
 mod mqtt;
@@ -16,13 +17,12 @@ mod network;
 mod system;
 mod system_app;
 mod time;
-mod unicorn;
 
+use display::Display;
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Input, Pull};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
-use static_cell::make_static;
 
 use defmt_rtt as _;
 use panic_halt as _;
@@ -34,7 +34,6 @@ use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
 };
 use crate::mqtt::MqttReceiveMessage;
-use crate::unicorn::display;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -63,14 +62,14 @@ async fn main(spawner: Spawner) {
         sleep: Input::new(p.PIN_27, Pull::Up),
     };
 
-    unicorn::init(p.PIO0, p.DMA_CH0, display_pins).await;
+    let display = Display::new(p.PIO0, p.DMA_CH0, display_pins, spawner);
 
-    let app_state = make_static!(system::AppState::new());
-    let system_app = make_static!(system_app::SystemApp::new());
-    let time = make_static!(time::Time::new());
-    let clock_app = make_static!(clock_app::ClockApp::new(time));
-    let effects_app = make_static!(effects_app::EffectsApp::new());
-    let mqtt_app = make_static!(mqtt_app::MqttApp::new());
+    let app_state = system::SystemState::new();
+    let system_app = system_app::SystemApp::new();
+    let time = time::Time::new();
+    let clock_app = clock_app::ClockApp::new(display, time);
+    let effects_app = effects_app::EffectsApp::new();
+    let mqtt_app = mqtt_app::MqttApp::new();
 
     let app_controller = app::AppController::new(
         system_app,
@@ -82,19 +81,11 @@ async fn main(spawner: Spawner) {
     );
 
     spawner
-        .spawn(display::process_display_queue_task())
-        .unwrap();
-
-    spawner
         .spawn(brightness_up_task(button_pins.brightness_up))
         .unwrap();
     spawner
         .spawn(brightness_down_task(button_pins.brightness_down))
         .unwrap();
-    spawner
-        .spawn(display::process_brightness_buttons_task())
-        .unwrap();
-
     spawner.spawn(button_a_task(button_pins.switch_a)).unwrap();
     spawner.spawn(button_b_task(button_pins.switch_b)).unwrap();
     spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
@@ -131,6 +122,7 @@ async fn main(spawner: Spawner) {
 
     spawner
         .spawn(display::process_mqtt_messages_task(
+            display,
             MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
@@ -149,7 +141,10 @@ async fn main(spawner: Spawner) {
         .unwrap();
 
     spawner
-        .spawn(mqtt::homeassistant::hass_discovery_task(app_controller))
+        .spawn(mqtt::homeassistant::hass_discovery_task(
+            display,
+            app_controller,
+        ))
         .unwrap();
 
     app_controller.run_forever().await;
