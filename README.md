@@ -56,7 +56,7 @@ pub const HASS_BASE_MQTT_TOPIC: &'static str = "homeassistant";
 - [x] Queue and display messages from MQTT
 - [x] Home assistant discovery
 - [x] Network resiliency
-- [ ] Good documentation
+- [x] Good documentation
 - [ ] Web configuration portal
 - [ ] Feature disablement
 - [ ] Saving last known config for reboot
