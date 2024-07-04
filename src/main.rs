@@ -17,7 +17,6 @@ mod network;
 mod system;
 mod system_app;
 mod time;
-// mod unicorn;
 
 use display::Display;
 use embassy_executor::Spawner;
