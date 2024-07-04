@@ -10,8 +10,8 @@ use static_cell::make_static;
 use unicorn_graphics::UnicornGraphics;
 
 use crate::{
-    app::UnicornApp, buttons::ButtonPress, mqtt::MqttReceiveMessage,
-    unicorn::display::DisplayGraphicsMessage,
+    app::UnicornApp, buttons::ButtonPress, display::messages::DisplayGraphicsMessage,
+    mqtt::MqttReceiveMessage,
 };
 
 use micromath::F32Ext;

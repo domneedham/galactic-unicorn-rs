@@ -3,10 +3,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex, signal::Signal};
 use embassy_time::Duration;
 use heapless::String;
+use static_cell::make_static;
 
 use crate::{
-    app::UnicornApp, buttons::ButtonPress, mqtt::MqttReceiveMessage,
-    unicorn::display::DisplayTextMessage,
+    app::UnicornApp, buttons::ButtonPress, display::messages::DisplayTextMessage,
+    mqtt::MqttReceiveMessage,
 };
 
 /// MQTT app. Will display the latest MQTT message.

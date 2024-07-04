@@ -67,7 +67,7 @@ mod effects {
     use galactic_unicorn_embassy::{HEIGHT, WIDTH};
     use unicorn_graphics::UnicornGraphics;
 
-    use crate::unicorn::display::DisplayGraphicsMessage;
+    use crate::display::messages::DisplayGraphicsMessage;
 
     /// All the effects that can be displayed.
     #[derive(Clone, Copy)]

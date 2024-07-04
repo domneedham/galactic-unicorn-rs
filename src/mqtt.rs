@@ -440,7 +440,7 @@ pub mod homeassistant {
 
     use crate::app::AppController;
     use crate::config::{DEVICE_ID, HASS_BASE_MQTT_TOPIC};
-    use crate::display::{send_brightness_state, send_color_state};
+    use crate::display::Display;
     use crate::mqtt::MqttMessage;
 
     use super::{topics::*, MqttReceiveMessage};
@@ -578,9 +578,9 @@ pub mod homeassistant {
     }
 
     /// Send app states over MQTT.
-    async fn send_states(app_controller: &'static AppController) {
-        send_brightness_state().await;
-        send_color_state().await;
+    async fn send_states(display: &'static Display, app_controller: &'static AppController) {
+        display.send_brightness_state().await;
+        display.send_color_state().await;
         app_controller.send_mqtt_states().await;
     }
 
@@ -593,17 +593,20 @@ pub mod homeassistant {
 
     /// Waits for an MQTT message for home assistant status and will republish discovery snd state.
     #[embassy_executor::task]
-    pub async fn hass_discovery_task(app_controller: &'static AppController) {
+    pub async fn hass_discovery_task(
+        display: &'static Display,
+        app_controller: &'static AppController,
+    ) {
         send_home_assistant_discovery().await;
         Timer::after_secs(3).await;
-        send_states(app_controller).await;
+        send_states(display, app_controller).await;
 
         loop {
             let message = HASS_RECIEVE_CHANNEL.receive().await;
             if message.topic == HASS_STATUS_TOPIC {
                 send_home_assistant_discovery().await;
                 Timer::after_secs(1).await;
-                send_states(app_controller).await;
+                send_states(display, app_controller).await;
             }
         }
     }

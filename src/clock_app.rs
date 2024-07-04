@@ -20,13 +20,13 @@ use unicorn_graphics::UnicornGraphics;
 use crate::{
     app::UnicornApp,
     buttons::ButtonPress,
+    display::{
+        messages::{DisplayGraphicsMessage, DisplayTextMessage},
+        Display,
+    },
     fonts::DrawOntoGraphics,
     mqtt::{topics::CLOCK_APP_STATE_TOPIC, MqttMessage},
     time::Time,
-    unicorn::{
-        self,
-        display::{DisplayGraphicsMessage, DisplayTextMessage},
-    },
 };
 
 /// All the effects that can be displayed on the clock.
@@ -42,6 +42,9 @@ pub enum ClockEffect {
 
 /// Clock app. Display the current time and date.
 pub struct ClockApp {
+    /// Reference to the display.
+    display: &'static Display,
+
     /// Reference to the time.
     time: &'static Time,
 
@@ -62,8 +65,9 @@ impl AlternateTextWidth for ClockApp {
 impl ClockApp {
     /// Create the static ref to clock app.
     /// Must only be called once or will panic.
-    pub fn new(time: &'static Time) -> &'static Self {
+    pub fn new(display: &'static Display, time: &'static Time) -> &'static Self {
         make_static!(Self {
+            display,
             time,
             effect: Mutex::new(ClockEffect::Color),
         })
@@ -142,7 +146,7 @@ impl ClockApp {
             let _ = write!(num_str, "{num}");
         }
 
-        &num_str.draw(gr, start, color);
+        num_str.as_str().draw(gr, start, color);
     }
 
     /// Turn hsv color into `Rgb888`.
@@ -207,7 +211,7 @@ impl UnicornApp for ClockApp {
 
             gr.clear_all();
 
-            let color = *unicorn::display::CURRENT_COLOR.lock().await;
+            let color = self.display.get_color().await;
 
             Self::draw_numbers(&mut gr, hour, 0, color);
             Self::draw_colon(&mut gr, 13);

@@ -15,6 +15,8 @@ use unicorn_graphics::UnicornGraphics;
 
 use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
 use crate::clock_app::ClockApp;
+use crate::display::messages::{DisplayGraphicsMessage, DisplayTextMessage};
+use crate::display::STOP_CURRENT_DISPLAY;
 use crate::effects_app::EffectsApp;
 use crate::mqtt::topics::APP_STATE_TOPIC;
 use crate::mqtt::{
@@ -25,8 +27,6 @@ use crate::mqtt_app::MqttApp;
 use crate::network::NetworkState;
 use crate::system::{StateUpdates, SystemState, STATE_CHANGED};
 use crate::system_app::SystemApp;
-use crate::unicorn;
-use crate::unicorn::display::{DisplayGraphicsMessage, DisplayTextMessage};
 
 /// Signal for an app change for the display task.
 static CHANGE_APP: Signal<ThreadModeRawMutex, Apps> = Signal::new();
@@ -275,7 +275,7 @@ async fn display_task(app_controller: &'static AppController) {
             }
         };
 
-        unicorn::display::STOP_CURRENT_DISPLAY.signal(true);
+        STOP_CURRENT_DISPLAY.signal(true);
         // when switching between apps we want to clear the old queue and blank the display ..
         DisplayGraphicsMessage::from_app(blank_graphics.get_pixels(), Duration::from_millis(10))
             .send_and_replace_queue()
