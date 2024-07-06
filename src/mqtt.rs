@@ -123,6 +123,11 @@ pub mod topics {
     pub const BRIGHTNESS_SET_TOPIC: &str = concat!(BRIGHTNESS_BASE_TOPIC, "/", SET);
     pub const BRIGHTNESS_STATE_TOPIC: &str = concat!(BRIGHTNESS_BASE_TOPIC, "/", STATE);
 
+    pub const AUTO_BRIGHTNESS_BASE_TOPIC: &str =
+        concat!(BASE_MQTT_TOPIC, "/display/auto_brightness");
+    pub const AUTO_BRIGHTNESS_SET_TOPIC: &str = concat!(AUTO_BRIGHTNESS_BASE_TOPIC, "/", SET);
+    pub const AUTO_BRIGHTNESS_STATE_TOPIC: &str = concat!(AUTO_BRIGHTNESS_BASE_TOPIC, "/", STATE);
+
     pub const RGB_BASE_TOPIC: &str = concat!(BASE_MQTT_TOPIC, "/display/rgb");
     pub const RGB_SET_TOPIC: &str = concat!(RGB_BASE_TOPIC, "/", SET);
     pub const RGB_STATE_TOPIC: &str = concat!(RGB_BASE_TOPIC, "/", STATE);
@@ -163,8 +168,8 @@ pub mod clients {
     use super::{
         homeassistant,
         topics::{
-            APP_SET_TOPIC, BRIGHTNESS_SET_TOPIC, CLOCK_APP_SET_TOPIC, NTP_SYNC_TOPIC,
-            RGB_SET_TOPIC, TEXT_SET_TOPIC,
+            APP_SET_TOPIC, AUTO_BRIGHTNESS_SET_TOPIC, BRIGHTNESS_SET_TOPIC, CLOCK_APP_SET_TOPIC,
+            NTP_SYNC_TOPIC, RGB_SET_TOPIC, TEXT_SET_TOPIC,
         },
         MqttMessage, MqttReceiveMessage, SEND_CHANNEL,
     };
@@ -180,7 +185,7 @@ pub mod clients {
     pub static RECEIVE_CLIENT_ERROR: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
     /// Buffer size for the embassy net socket.
-    const SOCKET_BUF_SIZE: usize = 2048;
+    const SOCKET_BUF_SIZE: usize = 4096;
 
     /// Buffer size for the mqtt client.
     const CLIENT_BUF_SIZE: usize = 512;
@@ -307,12 +312,13 @@ pub mod clients {
         )
         .await;
 
-        let topics: Vec<&str, 7> = Vec::from_slice(&[
+        let topics: Vec<&str, 8> = Vec::from_slice(&[
             BRIGHTNESS_SET_TOPIC,
             RGB_SET_TOPIC,
             TEXT_SET_TOPIC,
             APP_SET_TOPIC,
             CLOCK_APP_SET_TOPIC,
+            AUTO_BRIGHTNESS_SET_TOPIC,
             NTP_SYNC_TOPIC,
             homeassistant::HASS_STATUS_TOPIC,
         ])
@@ -553,6 +559,30 @@ pub mod homeassistant {
         .unwrap();
         MqttMessage::enqueue_hass(topic, &payload).await;
 
+        // display auto brightness
+        let topic = concat!(
+            HASS_BASE_MQTT_TOPIC,
+            "/switch/",
+            DEVICE_ID,
+            "/auto_brightness/config"
+        );
+        let mut payload = String::<256>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
+    "ids": "{DEVICE_ID}"
+  }},
+  "name": "Auto brightness",
+  "cmd_t": "{AUTO_BRIGHTNESS_SET_TOPIC}",
+  "stat_t": "{AUTO_BRIGHTNESS_STATE_TOPIC}",
+  "uniq_id": "{DEVICE_ID}_auto_brightness_01"
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(topic, &payload).await;
+
         // force sync to NTP
         let topic = concat!(
             HASS_BASE_MQTT_TOPIC,
@@ -584,6 +614,7 @@ pub mod homeassistant {
     ) {
         display.send_brightness_state().await;
         display.send_color_state().await;
+        display.send_auto_brightness_state().await;
         app_controller.send_mqtt_states().await;
     }
 
