@@ -903,8 +903,8 @@ dependencies = [
 
 [[package]]
 name = "galactic-unicorn-embassy"
-version = "0.4.0"
-source = "git+https://github.com/domneedham/pimoroni-unicorn-rs#ee9c805946c0f4785f6831b49b9ce7c203433fa6"
+version = "0.5.0"
+source = "git+https://github.com/domneedham/pimoroni-unicorn-rs?branch=light_level#746395f2bd6f79787b1f3776fcc362397fa552c6"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -1866,7 +1866,7 @@ checksum = "f962df74c8c05a667b5ee8bcf162993134c104e96440b663c8daa176dc772d8c"
 [[package]]
 name = "unicorn-graphics"
 version = "0.2.1"
-source = "git+https://github.com/domneedham/pimoroni-unicorn-rs#ee9c805946c0f4785f6831b49b9ce7c203433fa6"
+source = "git+https://github.com/domneedham/pimoroni-unicorn-rs?branch=light_level#746395f2bd6f79787b1f3776fcc362397fa552c6"
 dependencies = [
  "embedded-graphics",
  "embedded-graphics-core",

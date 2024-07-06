@@ -1,7 +1,7 @@
 use core::fmt::Write;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::peripherals::{ADC, DMA_CH0, PIO0};
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
     channel::Channel,
@@ -21,7 +21,10 @@ use embedded_graphics_core::{
     pixelcolor::{Rgb888, WebColors},
     Drawable,
 };
-use galactic_unicorn_embassy::{pins::UnicornDisplayPins, GalacticUnicorn, HEIGHT, WIDTH};
+use galactic_unicorn_embassy::{
+    pins::{UnicornDisplayPins, UnicornSensorPins},
+    GalacticUnicorn, HEIGHT, WIDTH,
+};
 use heapless::String;
 use messages::{DisplayGraphicsMessage, DisplayMessage, DisplayTextMessage};
 use static_cell::make_static;
@@ -52,9 +55,9 @@ static APP_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 8> = Cha
 pub static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
 /// Galactic unicorn display.
-pub struct Display {
+pub struct Display<'a> {
     /// The galactic unicorn board core.
-    galactic_unicorn: Mutex<ThreadModeRawMutex, GalacticUnicorn>,
+    galactic_unicorn: Mutex<ThreadModeRawMutex, GalacticUnicorn<'a>>,
 
     /// The current graphics being displayed.
     current_graphics: Mutex<ThreadModeRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
@@ -63,17 +66,25 @@ pub struct Display {
     current_color: Mutex<ThreadModeRawMutex, Rgb888>,
 }
 
-impl Display {
+impl<'a> Display<'a> {
     /// Create the static ref to display.
     /// Must only be called once or will panic.
     pub fn new(
         pio: PIO0,
         dma: DMA_CH0,
-        pins: UnicornDisplayPins,
+        adc: ADC,
+        display_pins: UnicornDisplayPins,
+        sensor_pins: UnicornSensorPins,
         spawner: Spawner,
     ) -> &'static Self {
         let display = make_static!(Self {
-            galactic_unicorn: Mutex::new(GalacticUnicorn::new(pio, pins, dma)),
+            galactic_unicorn: Mutex::new(GalacticUnicorn::new(
+                pio,
+                display_pins,
+                sensor_pins,
+                adc,
+                dma
+            )),
             current_graphics: Mutex::new(UnicornGraphics::new()),
             current_color: Mutex::new(Rgb888::CSS_PURPLE),
         });
@@ -82,6 +93,7 @@ impl Display {
         spawner
             .spawn(process_brightness_buttons_task(display))
             .unwrap();
+        spawner.spawn(process_light_level(display)).unwrap();
 
         display
     }
@@ -107,6 +119,10 @@ impl Display {
         write!(text, "{brightness}").unwrap();
 
         MqttMessage::enqueue_state(BRIGHTNESS_STATE_TOPIC, &text).await;
+    }
+
+    pub async fn get_light_level(&'static self) -> u16 {
+        self.galactic_unicorn.lock().await.get_light_level().await
     }
 
     /// Get the current active color.
@@ -269,7 +285,7 @@ impl Display {
 /// - MQTT channel
 /// - App channel
 #[embassy_executor::task]
-async fn process_display_queue_task(display: &'static Display) {
+async fn process_display_queue_task(display: &'static Display<'static>) {
     let mut graphics = UnicornGraphics::new();
     let mut message: Option<DisplayMessage> = None;
 
@@ -341,7 +357,7 @@ async fn process_display_queue_task(display: &'static Display) {
 
 /// Process any brightness button presses and update the display.
 #[embassy_executor::task]
-async fn process_brightness_buttons_task(display: &'static Display) {
+async fn process_brightness_buttons_task(display: &'static Display<'static>) {
     loop {
         let press_type = select(BRIGHTNESS_UP_PRESS.wait(), BRIGHTNESS_DOWN_PRESS.wait()).await;
 
@@ -382,10 +398,34 @@ async fn process_brightness_buttons_task(display: &'static Display) {
     }
 }
 
+#[embassy_executor::task]
+async fn process_light_level(display: &'static Display<'static>) {
+    loop {
+        let hw_light_level = display.get_light_level().await;
+
+        let light_level: u8 = if hw_light_level > 255 {
+            255
+        } else {
+            hw_light_level as u8
+        };
+
+        let brightness = display.get_brightness().await;
+
+        // if light level has changed by 10 or more
+        if light_level > brightness.saturating_add(10)
+            || light_level < brightness.saturating_sub(10)
+        {
+            display.set_brightness(light_level).await;
+        }
+
+        Timer::after_secs(2).await;
+    }
+}
+
 /// Process MQTT messages related to the display.
 #[embassy_executor::task]
 pub async fn process_mqtt_messages_task(
-    display: &'static Display,
+    display: &'static Display<'static>,
     mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
 ) {
     loop {

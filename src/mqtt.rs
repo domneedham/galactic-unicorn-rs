@@ -578,7 +578,10 @@ pub mod homeassistant {
     }
 
     /// Send app states over MQTT.
-    async fn send_states(display: &'static Display, app_controller: &'static AppController) {
+    async fn send_states(
+        display: &'static Display<'static>,
+        app_controller: &'static AppController,
+    ) {
         display.send_brightness_state().await;
         display.send_color_state().await;
         app_controller.send_mqtt_states().await;
@@ -594,7 +597,7 @@ pub mod homeassistant {
     /// Waits for an MQTT message for home assistant status and will republish discovery snd state.
     #[embassy_executor::task]
     pub async fn hass_discovery_task(
-        display: &'static Display,
+        display: &'static Display<'static>,
         app_controller: &'static AppController,
     ) {
         send_home_assistant_discovery().await;
