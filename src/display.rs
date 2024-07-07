@@ -1,7 +1,7 @@
-use core::fmt::Write;
+use core::{cell::RefCell, fmt::Write};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::peripherals::{ADC, DMA_CH0, PIO0};
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
     channel::Channel,
@@ -9,8 +9,7 @@ use embassy_sync::{
     pubsub::{PubSubChannel, Subscriber},
     signal::Signal,
 };
-use embassy_time::Timer;
-
+use embassy_time::{Instant, Timer};
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyle},
     pixelcolor::RgbColor,
@@ -21,7 +20,10 @@ use embedded_graphics_core::{
     pixelcolor::{Rgb888, WebColors},
     Drawable,
 };
-use galactic_unicorn_embassy::{pins::UnicornDisplayPins, GalacticUnicorn, HEIGHT, WIDTH};
+use galactic_unicorn_embassy::{
+    pins::{UnicornDisplayPins, UnicornSensorPins},
+    GalacticUnicorn, HEIGHT, WIDTH,
+};
 use heapless::String;
 use messages::{DisplayGraphicsMessage, DisplayMessage, DisplayTextMessage};
 use static_cell::make_static;
@@ -30,7 +32,10 @@ use unicorn_graphics::UnicornGraphics;
 use crate::{
     buttons::{self, BRIGHTNESS_DOWN_PRESS, BRIGHTNESS_UP_PRESS},
     mqtt::{
-        topics::{BRIGHTNESS_SET_TOPIC, BRIGHTNESS_STATE_TOPIC, RGB_SET_TOPIC, RGB_STATE_TOPIC},
+        topics::{
+            AUTO_BRIGHTNESS_SET_TOPIC, AUTO_BRIGHTNESS_STATE_TOPIC, BRIGHTNESS_SET_TOPIC,
+            BRIGHTNESS_STATE_TOPIC, RGB_SET_TOPIC, RGB_STATE_TOPIC,
+        },
         MqttMessage, MqttReceiveMessage,
     },
 };
@@ -48,40 +53,104 @@ static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 8> = Ch
 /// Channel for messages from apps.
 static APP_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 8> = Channel::new();
 
+/// Signal for auto light feature enable/disable.
+static AUTO_LIGHT_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
+
 /// Signal for stopping the display message, ready for the next one.
 pub static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
+/// Auto brightness handler.
+struct AutoBrightness {
+    enabled: bool,
+    last_check: Instant,
+    next_check_interval: u64,
+    temp_disable: bool,
+}
+
+impl AutoBrightness {
+    /// Default check interval
+    const DEFAULT_DURATION: u64 = 2;
+
+    /// Create a new auto brightness.
+    fn new() -> Self {
+        Self {
+            enabled: true,
+            last_check: Instant::now(),
+            next_check_interval: Self::DEFAULT_DURATION,
+            temp_disable: false,
+        }
+    }
+
+    /// Update the last checked value to now.
+    fn checked(&mut self) {
+        self.last_check = Instant::now();
+    }
+
+    /// Update the check interval to defaults.
+    fn set_default_checks(&mut self) {
+        self.next_check_interval = Self::DEFAULT_DURATION;
+        self.temp_disable = false;
+    }
+
+    /// Temporarily disable the interval checks for 30 seconds.
+    fn disable_short(&mut self) {
+        self.next_check_interval = 30;
+        self.temp_disable = true;
+        // restart the 30 second timer
+        self.last_check = Instant::now();
+    }
+
+    /// Check if the minimum duration for next auto light update has passed.
+    /// This can be true even if `enabled` is false.
+    fn has_min_duration_passed(&self) -> bool {
+        Instant::now().duration_since(self.last_check).as_secs() > self.next_check_interval
+    }
+}
+
 /// Galactic unicorn display.
-pub struct Display {
+pub struct Display<'a> {
     /// The galactic unicorn board core.
-    galactic_unicorn: Mutex<ThreadModeRawMutex, GalacticUnicorn>,
+    galactic_unicorn: Mutex<ThreadModeRawMutex, GalacticUnicorn<'a>>,
 
     /// The current graphics being displayed.
     current_graphics: Mutex<ThreadModeRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
 
     /// The current active color.
     current_color: Mutex<ThreadModeRawMutex, Rgb888>,
+
+    /// Is auto brightness enabled.
+    auto_brightness: RefCell<AutoBrightness>,
 }
 
-impl Display {
+impl<'a> Display<'a> {
     /// Create the static ref to display.
     /// Must only be called once or will panic.
     pub fn new(
         pio: PIO0,
         dma: DMA_CH0,
-        pins: UnicornDisplayPins,
+        adc: ADC,
+        display_pins: UnicornDisplayPins,
+        sensor_pins: UnicornSensorPins,
         spawner: Spawner,
     ) -> &'static Self {
         let display = make_static!(Self {
-            galactic_unicorn: Mutex::new(GalacticUnicorn::new(pio, pins, dma)),
+            galactic_unicorn: Mutex::new(GalacticUnicorn::new(
+                pio,
+                display_pins,
+                sensor_pins,
+                adc,
+                dma
+            )),
             current_graphics: Mutex::new(UnicornGraphics::new()),
             current_color: Mutex::new(Rgb888::CSS_PURPLE),
+            auto_brightness: RefCell::new(AutoBrightness::new()),
         });
 
         spawner.spawn(process_display_queue_task(display)).unwrap();
         spawner
             .spawn(process_brightness_buttons_task(display))
             .unwrap();
+        spawner.spawn(process_light_level(display)).unwrap();
 
         display
     }
@@ -93,10 +162,20 @@ impl Display {
 
     /// Set the brightness on the display and send the state over MQTT.
     pub async fn set_brightness(&'static self, brightness: u8) {
+        // enable auto brightness if it was previously disabled
+        if self.get_brightness().await == 0 && brightness > 0 {
+            self.set_auto_brightness(true).await;
+        }
+
         self.galactic_unicorn.lock().await.brightness = brightness;
         self.redraw_graphics().await;
 
         self.send_brightness_state().await;
+
+        // disable auto brightness if the display has been turned off
+        if brightness == 0 {
+            self.set_auto_brightness(false).await;
+        }
     }
 
     /// Send the current brightness state over MQTT.
@@ -107,6 +186,47 @@ impl Display {
         write!(text, "{brightness}").unwrap();
 
         MqttMessage::enqueue_state(BRIGHTNESS_STATE_TOPIC, &text).await;
+    }
+
+    /// Toggle the auto brightness value and send the state over MQTT.
+    pub async fn toggle_auto_brightness(&'static self) {
+        let current_state = if let Ok(ab) = self.auto_brightness.try_borrow() {
+            Ok(ab.enabled)
+        } else {
+            Err(())
+        };
+
+        if let Ok(state) = current_state {
+            self.set_auto_brightness(!state).await;
+        }
+    }
+
+    /// Set the auto brightness value and send the state over MQTT.
+    pub async fn set_auto_brightness(&'static self, state: bool) {
+        if let Ok(mut ab) = self.auto_brightness.try_borrow_mut() {
+            ab.enabled = state;
+            AUTO_LIGHT_SIGNAL.signal(state);
+
+            if state {
+                ab.set_default_checks();
+            }
+        }
+
+        self.send_auto_brightness_state().await;
+    }
+
+    /// Send the current auto brightness state over MQTT.
+    pub async fn send_auto_brightness_state(&'static self) {
+        if let Ok(ab) = self.auto_brightness.try_borrow() {
+            let text = if ab.enabled { "ON" } else { "OFF" };
+
+            MqttMessage::enqueue_state(&AUTO_BRIGHTNESS_STATE_TOPIC, &text).await;
+        };
+    }
+
+    /// Get the current light level from the ambient light sensor.
+    pub async fn get_light_level(&'static self) -> u16 {
+        self.galactic_unicorn.lock().await.get_light_level().await
     }
 
     /// Get the current active color.
@@ -269,7 +389,7 @@ impl Display {
 /// - MQTT channel
 /// - App channel
 #[embassy_executor::task]
-async fn process_display_queue_task(display: &'static Display) {
+async fn process_display_queue_task(display: &'static Display<'static>) {
     let mut graphics = UnicornGraphics::new();
     let mut message: Option<DisplayMessage> = None;
 
@@ -341,13 +461,23 @@ async fn process_display_queue_task(display: &'static Display) {
 
 /// Process any brightness button presses and update the display.
 #[embassy_executor::task]
-async fn process_brightness_buttons_task(display: &'static Display) {
+async fn process_brightness_buttons_task(display: &'static Display<'static>) {
     loop {
         let press_type = select(BRIGHTNESS_UP_PRESS.wait(), BRIGHTNESS_DOWN_PRESS.wait()).await;
 
+        // 500ms period to see if both up and down are pressed
+        let event = match press_type {
+            Either::First(_) => BRIGHTNESS_DOWN_PRESS.wait(),
+            Either::Second(_) => BRIGHTNESS_UP_PRESS.wait(),
+        };
+        if let Either::Second(_) = select(Timer::after_millis(500), event).await {
+            display.toggle_auto_brightness().await;
+            continue;
+        }
+
         let current_brightness = display.get_brightness().await;
 
-        match press_type {
+        match &press_type {
             Either::First(press) => match press {
                 buttons::ButtonPress::Short => {
                     display
@@ -379,13 +509,61 @@ async fn process_brightness_buttons_task(display: &'static Display) {
                 }
             },
         }
+
+        if let Ok(mut ab) = display.auto_brightness.try_borrow_mut() {
+            ab.disable_short();
+            continue;
+        }
+    }
+}
+
+/// Process the light level and update brightness if required.
+#[embassy_executor::task]
+async fn process_light_level(display: &'static Display<'static>) {
+    loop {
+        let hw_light_level = display.get_light_level().await;
+
+        let light_level: u8 = if hw_light_level > 255 {
+            255
+        } else {
+            hw_light_level as u8
+        };
+
+        let brightness = display.get_brightness().await;
+
+        // if light level has changed by 10 or more
+        if light_level > brightness.saturating_add(10)
+            || light_level < brightness.saturating_sub(10)
+        {
+            display.set_brightness(light_level).await;
+        }
+
+        if let Ok(mut ab) = display.auto_brightness.try_borrow_mut() {
+            ab.checked();
+        }
+
+        loop {
+            select(Timer::after_secs(2), AUTO_LIGHT_SIGNAL.wait()).await;
+
+            if let Ok(mut ab) = display.auto_brightness.try_borrow_mut() {
+                if ab.has_min_duration_passed() {
+                    if ab.temp_disable {
+                        ab.set_default_checks();
+                    }
+
+                    if ab.enabled {
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
 /// Process MQTT messages related to the display.
 #[embassy_executor::task]
 pub async fn process_mqtt_messages_task(
-    display: &'static Display,
+    display: &'static Display<'static>,
     mut subscriber: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
 ) {
     loop {
@@ -397,6 +575,12 @@ pub async fn process_mqtt_messages_task(
                 Err(_) => 255,
             };
             display.set_brightness(brightness).await;
+        } else if message.topic == AUTO_BRIGHTNESS_SET_TOPIC {
+            if message.body == "ON" {
+                display.set_auto_brightness(true).await;
+            } else {
+                display.set_auto_brightness(false).await;
+            }
         } else if message.topic == RGB_SET_TOPIC {
             let mut r = String::<3>::new();
             let mut g = String::<3>::new();

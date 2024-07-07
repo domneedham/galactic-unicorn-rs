@@ -25,6 +25,7 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
 
 use defmt_rtt as _;
+use galactic_unicorn_embassy::pins::UnicornSensorPins;
 use panic_halt as _;
 
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
@@ -50,6 +51,10 @@ async fn main(spawner: Spawner) {
         row_bit_3: p.PIN_20,
     };
 
+    let sensor_pins = UnicornSensorPins {
+        light_sensor: p.PIN_28,
+    };
+
     let button_pins = UnicornButtonPins {
         switch_a: Input::new(p.PIN_0, Pull::Up),
         switch_b: Input::new(p.PIN_1, Pull::Up),
@@ -62,7 +67,7 @@ async fn main(spawner: Spawner) {
         sleep: Input::new(p.PIN_27, Pull::Up),
     };
 
-    let display = Display::new(p.PIO0, p.DMA_CH0, display_pins, spawner);
+    let display = Display::new(p.PIO0, p.DMA_CH0, p.ADC, display_pins, sensor_pins, spawner);
 
     let app_state = system::SystemState::new();
     let system_app = system_app::SystemApp::new();

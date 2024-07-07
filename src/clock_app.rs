@@ -43,7 +43,7 @@ pub enum ClockEffect {
 /// Clock app. Display the current time and date.
 pub struct ClockApp {
     /// Reference to the display.
-    display: &'static Display,
+    display: &'static Display<'static>,
 
     /// Reference to the time.
     time: &'static Time,
