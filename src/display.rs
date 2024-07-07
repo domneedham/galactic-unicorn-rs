@@ -9,7 +9,7 @@ use embassy_sync::{
     pubsub::{PubSubChannel, Subscriber},
     signal::Signal,
 };
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyle},
     pixelcolor::RgbColor,
@@ -59,6 +59,54 @@ static AUTO_LIGHT_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
 /// Signal for stopping the display message, ready for the next one.
 pub static STOP_CURRENT_DISPLAY: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
+/// Auto brightness handler.
+struct AutoBrightness {
+    enabled: bool,
+    last_check: Instant,
+    next_check_interval: u64,
+    temp_disable: bool,
+}
+
+impl AutoBrightness {
+    /// Default check interval
+    const DEFAULT_DURATION: u64 = 2;
+
+    /// Create a new auto brightness.
+    fn new() -> Self {
+        Self {
+            enabled: true,
+            last_check: Instant::now(),
+            next_check_interval: Self::DEFAULT_DURATION,
+            temp_disable: false,
+        }
+    }
+
+    /// Update the last checked value to now.
+    fn checked(&mut self) {
+        self.last_check = Instant::now();
+    }
+
+    /// Update the check interval to defaults.
+    fn set_default_checks(&mut self) {
+        self.next_check_interval = Self::DEFAULT_DURATION;
+        self.temp_disable = false;
+    }
+
+    /// Temporarily disable the interval checks for 30 seconds.
+    fn disable_short(&mut self) {
+        self.next_check_interval = 30;
+        self.temp_disable = true;
+        // restart the 30 second timer
+        self.last_check = Instant::now();
+    }
+
+    /// Check if the minimum duration for next auto light update has passed.
+    /// This can be true even if `enabled` is false.
+    fn has_min_duration_passed(&self) -> bool {
+        Instant::now().duration_since(self.last_check).as_secs() > self.next_check_interval
+    }
+}
+
 /// Galactic unicorn display.
 pub struct Display<'a> {
     /// The galactic unicorn board core.
@@ -71,7 +119,7 @@ pub struct Display<'a> {
     current_color: Mutex<ThreadModeRawMutex, Rgb888>,
 
     /// Is auto brightness enabled.
-    auto_brightness: RefCell<bool>,
+    auto_brightness: RefCell<AutoBrightness>,
 }
 
 impl<'a> Display<'a> {
@@ -95,7 +143,7 @@ impl<'a> Display<'a> {
             )),
             current_graphics: Mutex::new(UnicornGraphics::new()),
             current_color: Mutex::new(Rgb888::CSS_PURPLE),
-            auto_brightness: RefCell::new(true),
+            auto_brightness: RefCell::new(AutoBrightness::new()),
         });
 
         spawner.spawn(process_display_queue_task(display)).unwrap();
@@ -140,20 +188,40 @@ impl<'a> Display<'a> {
         MqttMessage::enqueue_state(BRIGHTNESS_STATE_TOPIC, &text).await;
     }
 
+    /// Toggle the auto brightness value and send the state over MQTT.
+    pub async fn toggle_auto_brightness(&'static self) {
+        let current_state = if let Ok(ab) = self.auto_brightness.try_borrow() {
+            Ok(ab.enabled)
+        } else {
+            Err(())
+        };
+
+        if let Ok(state) = current_state {
+            self.set_auto_brightness(!state).await;
+        }
+    }
+
     /// Set the auto brightness value and send the state over MQTT.
     pub async fn set_auto_brightness(&'static self, state: bool) {
-        self.auto_brightness.replace(state);
-        AUTO_LIGHT_SIGNAL.signal(state);
+        if let Ok(mut ab) = self.auto_brightness.try_borrow_mut() {
+            ab.enabled = state;
+            AUTO_LIGHT_SIGNAL.signal(state);
+
+            if state {
+                ab.set_default_checks();
+            }
+        }
+
         self.send_auto_brightness_state().await;
     }
 
     /// Send the current auto brightness state over MQTT.
     pub async fn send_auto_brightness_state(&'static self) {
-        let state = *self.auto_brightness.borrow();
+        if let Ok(ab) = self.auto_brightness.try_borrow() {
+            let text = if ab.enabled { "ON" } else { "OFF" };
 
-        let text = if state { "ON" } else { "OFF" };
-
-        MqttMessage::enqueue_state(&AUTO_BRIGHTNESS_STATE_TOPIC, &text).await;
+            MqttMessage::enqueue_state(&AUTO_BRIGHTNESS_STATE_TOPIC, &text).await;
+        };
     }
 
     /// Get the current light level from the ambient light sensor.
@@ -403,8 +471,7 @@ async fn process_brightness_buttons_task(display: &'static Display<'static>) {
             Either::Second(_) => BRIGHTNESS_UP_PRESS.wait(),
         };
         if let Either::Second(_) = select(Timer::after_millis(500), event).await {
-            let state = *display.auto_brightness.borrow();
-            display.set_auto_brightness(!state).await;
+            display.toggle_auto_brightness().await;
             continue;
         }
 
@@ -442,6 +509,11 @@ async fn process_brightness_buttons_task(display: &'static Display<'static>) {
                 }
             },
         }
+
+        if let Ok(mut ab) = display.auto_brightness.try_borrow_mut() {
+            ab.disable_short();
+            continue;
+        }
     }
 }
 
@@ -466,11 +538,23 @@ async fn process_light_level(display: &'static Display<'static>) {
             display.set_brightness(light_level).await;
         }
 
+        if let Ok(mut ab) = display.auto_brightness.try_borrow_mut() {
+            ab.checked();
+        }
+
         loop {
             select(Timer::after_secs(2), AUTO_LIGHT_SIGNAL.wait()).await;
 
-            if *display.auto_brightness.borrow() {
-                break;
+            if let Ok(mut ab) = display.auto_brightness.try_borrow_mut() {
+                if ab.has_min_duration_passed() {
+                    if ab.temp_disable {
+                        ab.set_default_checks();
+                    }
+
+                    if ab.enabled {
+                        break;
+                    }
+                }
             }
         }
     }
