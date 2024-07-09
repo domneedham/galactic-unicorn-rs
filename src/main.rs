@@ -69,6 +69,21 @@ async fn main(spawner: Spawner) {
 
     let display = Display::new(p.PIO0, p.DMA_CH0, p.ADC, display_pins, sensor_pins, spawner);
 
+    spawner
+        .spawn(brightness_up_task(button_pins.brightness_up))
+        .unwrap();
+    spawner
+        .spawn(brightness_down_task(button_pins.brightness_down))
+        .unwrap();
+
+    if true {
+        network::create_network(
+            spawner, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
+        )
+        .await;
+        return;
+    }
+
     let app_state = system::SystemState::new();
     let system_app = system_app::SystemApp::new();
     let time = time::Time::new();
@@ -85,12 +100,6 @@ async fn main(spawner: Spawner) {
         spawner,
     );
 
-    spawner
-        .spawn(brightness_up_task(button_pins.brightness_up))
-        .unwrap();
-    spawner
-        .spawn(brightness_down_task(button_pins.brightness_down))
-        .unwrap();
     spawner.spawn(button_a_task(button_pins.switch_a)).unwrap();
     spawner.spawn(button_b_task(button_pins.switch_b)).unwrap();
     spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();

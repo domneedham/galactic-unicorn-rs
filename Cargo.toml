@@ -63,6 +63,10 @@ micromath = "2.1.0"
 strum = { version = "0.26", default-features = false }
 strum_macros = { version = "0.26", default-features = false }
 constcat = "0.5.0"
+edge-nal = { version = "0.2.0", git = "https://github.com/ivmarkov/edge-net" }
+edge-nal-embassy = { version = "0.2.0", git = "https://github.com/ivmarkov/edge-net" }
+edge-dhcp = { version = "0.2.0", git = "https://github.com/ivmarkov/edge-net" }
+picoserve = { version = "0.11.1", features = ["embassy"] }
 
 # cargo build/run
 [profile.dev]

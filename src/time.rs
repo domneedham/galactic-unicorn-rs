@@ -142,6 +142,7 @@ pub mod ntp {
                     no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
                 no_std_net::IpAddr::V4(ipv4_addr)
             }
+            embassy_net::IpAddress::Ipv6(_) => todo!(),
         };
         SocketAddr::new(addr, port)
     }
