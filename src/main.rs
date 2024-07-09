@@ -77,7 +77,7 @@ async fn main(spawner: Spawner) {
         .unwrap();
 
     if true {
-        network::create_network(
+        network::access_point::create_network(
             spawner, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
         )
         .await;

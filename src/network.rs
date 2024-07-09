@@ -1,12 +1,4 @@
-use core::net::{IpAddr, SocketAddr};
-
 use cyw43_pio::PioSpi;
-use edge_dhcp::{
-    server::{Server, ServerOptions},
-    Ipv4Addr,
-};
-use edge_nal::UdpBind;
-use edge_nal_embassy::{Udp, UdpBuffers};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
@@ -18,12 +10,10 @@ use embassy_rp::{
 };
 use embassy_time::{Duration, Timer};
 use heapless::Vec;
-use picoserve::routing::get;
-use static_cell::{make_static, StaticCell};
+use static_cell::StaticCell;
 
 use crate::{
     config::*,
-    display::messages::DisplayTextMessage,
     mqtt::clients::{RECEIVE_CLIENT_ERROR, SEND_CLIENT_ERROR},
     system::SystemState,
 };
@@ -36,7 +26,7 @@ pub enum NetworkState {
     Error,
 }
 
-bind_interrupts!(struct Irqs {
+bind_interrupts!(struct PioIrqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
 });
 
@@ -75,7 +65,7 @@ pub async fn create_and_join_network(
     // wifi
     let pwr = Output::new(pin_23, Level::Low);
     let cs = Output::new(pin_25, Level::High);
-    let mut pio = Pio::new(pio_1, Irqs);
+    let mut pio = Pio::new(pio_1, PioIrqs);
     let spi = PioSpi::new(
         &mut pio.common,
         pio.sm0,
@@ -134,154 +124,6 @@ pub async fn create_and_join_network(
     stack
 }
 
-/// Create and join the wifi network. Will wait until it has successfully joined.
-pub async fn create_network(
-    spawner: Spawner,
-    pin_23: PIN_23,
-    pin_24: PIN_24,
-    pin_25: PIN_25,
-    pin_29: PIN_29,
-    pio_1: PIO1,
-    dma_ch1: DMA_CH1,
-) -> &'static Stack<cyw43::NetDriver<'static>> {
-    let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
-    let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
-
-    // wifi
-    let pwr = Output::new(pin_23, Level::Low);
-    let cs = Output::new(pin_25, Level::High);
-    let mut pio = Pio::new(pio_1, Irqs);
-    let spi = PioSpi::new(
-        &mut pio.common,
-        pio.sm0,
-        pio.irq0,
-        cs,
-        pin_24,
-        pin_29,
-        dma_ch1,
-    );
-    static STATE: StaticCell<cyw43::State> = StaticCell::new();
-    let state = STATE.init(cyw43::State::new());
-
-    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
-    spawner.spawn(wifi_task(runner)).unwrap();
-
-    control.init(clm).await;
-    control
-        .set_power_management(cyw43::PowerManagementMode::PowerSave)
-        .await;
-
-    let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-        address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 1, 254), 24),
-        dns_servers: heapless::Vec::new(),
-        gateway: None,
-    });
-    // Generate random seed
-    let seed = 0x0123_4567_89ab_cdef; // chosen by fair dice roll. guarenteed to be random.
-
-    // Init network stack
-    static STACK: StaticCell<Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
-    static RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
-    let stack = &*STACK.init(Stack::new(
-        net_device,
-        config,
-        RESOURCES.init(StackResources::<10>::new()),
-        seed,
-    ));
-
-    spawner.spawn(net_task(stack)).unwrap();
-
-    control.start_ap_open(DEVICE_ID, 5).await;
-
-    spawner.spawn(dhcp_server(stack)).unwrap();
-
-    fn create_picoserve_router() -> picoserve::Router<AppRouter> {
-        picoserve::Router::new().route(
-            "/",
-            get(|| picoserve::response::File::html(include_str!("./web/index.html"))),
-        )
-    }
-
-    let app = make_static!(create_picoserve_router());
-
-    let config = make_static!(picoserve::Config::new(picoserve::Timeouts {
-        start_read_request: Some(Duration::from_secs(5)),
-        read_request: Some(Duration::from_secs(1)),
-        write: Some(Duration::from_secs(1)),
-    })
-    .keep_connection_alive());
-
-    spawner
-        .spawn(picoserve_task(0, stack, app, config))
-        .unwrap();
-
-    // app_state.set_network_state(NetworkState::Connected).await;
-
-    // spawner.spawn(monitor_network_task(app_state)).unwrap();
-
-    DisplayTextMessage::from_app("Go to 192.168.1.254 in your browser!", None, None, None)
-        .send()
-        .await;
-
-    stack
-}
-
-pub type AppRouter = impl picoserve::routing::PathRouter;
-
-#[embassy_executor::task]
-async fn picoserve_task(
-    id: usize,
-    stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>,
-    app: &'static picoserve::Router<AppRouter>,
-    config: &'static picoserve::Config<Duration>,
-) -> ! {
-    let port = 80;
-    let mut tcp_rx_buffer = [0; 1024];
-    let mut tcp_tx_buffer = [0; 1024];
-    let mut http_buffer = [0; 2048];
-
-    picoserve::listen_and_serve(
-        id,
-        app,
-        config,
-        stack,
-        port,
-        &mut tcp_rx_buffer,
-        &mut tcp_tx_buffer,
-        &mut http_buffer,
-    )
-    .await
-}
-
-#[embassy_executor::task]
-async fn dhcp_server(stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>) {
-    let buffers = UdpBuffers::<2, 1024, 1024, 2>::new();
-    let edge_net_socket = Udp::new(stack, &buffers);
-    let mut socket = edge_net_socket
-        .bind(SocketAddr::new(
-            IpAddr::V4(core::net::Ipv4Addr::new(192, 168, 1, 254)),
-            67,
-        ))
-        .await
-        .unwrap();
-
-    let ip = edge_dhcp::Ipv4Addr::new(192, 168, 1, 254);
-    let mut server = Server::<10>::new(ip);
-    server.range_start = Ipv4Addr::new(192, 168, 1, 50);
-    server.range_end = Ipv4Addr::new(192, 168, 1, 200);
-
-    let mut gw_buf = [Ipv4Addr::UNSPECIFIED];
-    let dns = [Ipv4Addr::new(1, 1, 1, 1)];
-    let mut server_options = ServerOptions::new(ip, Some(&mut gw_buf));
-    server_options.dns = &dns;
-
-    let mut buf = [0; 1500];
-
-    edge_dhcp::io::server::run(&mut server, &server_options, &mut socket, &mut buf)
-        .await
-        .unwrap();
-}
-
 /// Wait for messages from MQTT clients and update network state accordingly.
 /// There is no built in detection for network errors hence the relying on MQTT net stack.
 #[embassy_executor::task]
@@ -295,5 +137,204 @@ async fn monitor_network_task(app_state: &'static SystemState) {
         app_state.set_network_state(NetworkState::Connected).await;
     } else {
         app_state.set_network_state(NetworkState::Error).await;
+    }
+}
+
+pub mod access_point {
+    use core::net::{IpAddr, SocketAddr};
+
+    use cyw43_pio::PioSpi;
+    use edge_dhcp::{
+        server::{Server, ServerOptions},
+        Ipv4Addr,
+    };
+    use edge_nal::UdpBind;
+    use edge_nal_embassy::{Udp, UdpBuffers};
+    use embassy_executor::Spawner;
+    use embassy_futures::select::select;
+    use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
+    use embassy_rp::{
+        gpio::{Level, Output},
+        peripherals::{DMA_CH1, PIN_23, PIN_24, PIN_25, PIN_29, PIO1},
+        pio::Pio,
+    };
+    use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
+    use embassy_time::{Duration, Timer};
+    use picoserve::routing::get;
+    use static_cell::StaticCell;
+
+    use crate::{
+        config::*,
+        display::messages::DisplayTextMessage,
+        network::{net_task, wifi_task, PioIrqs},
+    };
+
+    /// Signal for when the DHCP server has given a lease.
+    static LEASE_GIVEN: Signal<ThreadModeRawMutex, bool> = Signal::new();
+
+    /// Start an open access point.
+    pub async fn create_network(
+        spawner: Spawner,
+        pin_23: PIN_23,
+        pin_24: PIN_24,
+        pin_25: PIN_25,
+        pin_29: PIN_29,
+        pio_1: PIO1,
+        dma_ch1: DMA_CH1,
+    ) -> &'static Stack<cyw43::NetDriver<'static>> {
+        let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
+        let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
+
+        // wifi
+        let pwr = Output::new(pin_23, Level::Low);
+        let cs = Output::new(pin_25, Level::High);
+        let mut pio = Pio::new(pio_1, PioIrqs);
+        let spi = PioSpi::new(
+            &mut pio.common,
+            pio.sm0,
+            pio.irq0,
+            cs,
+            pin_24,
+            pin_29,
+            dma_ch1,
+        );
+        static STATE: StaticCell<cyw43::State> = StaticCell::new();
+        let state = STATE.init(cyw43::State::new());
+
+        let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
+        spawner.spawn(wifi_task(runner)).unwrap();
+
+        control.init(clm).await;
+        control
+            .set_power_management(cyw43::PowerManagementMode::PowerSave)
+            .await;
+
+        let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+            address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 1, 254), 24),
+            dns_servers: heapless::Vec::new(),
+            gateway: None,
+        });
+        // Generate random seed
+        let seed = 0x0123_4567_89ab_cdef; // chosen by fair dice roll. guarenteed to be random.
+
+        // Init network stack
+        static STACK: StaticCell<Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
+        static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
+        let stack = &*STACK.init(Stack::new(
+            net_device,
+            config,
+            RESOURCES.init(StackResources::<5>::new()),
+            seed,
+        ));
+
+        spawner.spawn(net_task(stack)).unwrap();
+
+        control.start_ap_open(DEVICE_ID, 5).await;
+
+        spawner.spawn(dhcp_server(stack)).unwrap();
+
+        DisplayTextMessage::from_app(
+            constcat::concat!("Connect to ", DEVICE_ID, " wifi network"),
+            None,
+            None,
+            None,
+        )
+        .send()
+        .await;
+
+        // wait for a lease to be given before continuing
+        LEASE_GIVEN.wait().await;
+
+        spawner.spawn(picoserve_task(stack)).unwrap();
+
+        // once a lease has been given, inform the user with an instruction
+        DisplayTextMessage::from_app("Now go to 192.168.1.254 in your browser!", None, None, None)
+            .send_and_show_now()
+            .await;
+
+        // this will just repeat
+        DisplayTextMessage::from_app("Go to 192.168.1.254 in your browser!", None, None, None)
+            .send()
+            .await;
+
+        stack
+    }
+
+    /// Start and run the DHCP server.
+    #[embassy_executor::task]
+    async fn dhcp_server(stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>) {
+        let buffers = UdpBuffers::<2, 1024, 1024, 2>::new();
+        let edge_net_socket = Udp::new(stack, &buffers);
+        let mut socket = edge_net_socket
+            .bind(SocketAddr::new(
+                IpAddr::V4(core::net::Ipv4Addr::new(192, 168, 1, 254)),
+                67,
+            ))
+            .await
+            .unwrap();
+
+        let ip = edge_dhcp::Ipv4Addr::new(192, 168, 1, 254);
+        let mut server = Server::<10>::new(ip);
+        server.range_start = Ipv4Addr::new(192, 168, 1, 50);
+        server.range_end = Ipv4Addr::new(192, 168, 1, 200);
+
+        let mut gw_buf = [Ipv4Addr::UNSPECIFIED];
+        let dns = [Ipv4Addr::new(1, 1, 1, 1)];
+        let mut server_options = ServerOptions::new(ip, Some(&mut gw_buf));
+        server_options.dns = &dns;
+
+        let mut buf = [0; 1500];
+
+        // wait for a lease to be given then break loop
+        loop {
+            select(
+                edge_dhcp::io::server::run(&mut server, &server_options, &mut socket, &mut buf),
+                Timer::after_secs(5),
+            )
+            .await;
+
+            if !server.leases.is_empty() {
+                LEASE_GIVEN.signal(true);
+                break;
+            }
+        }
+
+        // once a lease is given, just run constantly
+        edge_dhcp::io::server::run(&mut server, &server_options, &mut socket, &mut buf)
+            .await
+            .unwrap();
+    }
+
+    /// Start and run the web server.
+    #[embassy_executor::task]
+    async fn picoserve_task(stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>) -> ! {
+        let port = 80;
+        let mut tcp_rx_buffer = [0; 1024];
+        let mut tcp_tx_buffer = [0; 1024];
+        let mut http_buffer = [0; 2048];
+
+        let app = picoserve::Router::new().route(
+            "/",
+            get(|| picoserve::response::File::html(include_str!("./web/index.html"))),
+        );
+
+        let config = picoserve::Config::new(picoserve::Timeouts {
+            start_read_request: Some(Duration::from_secs(5)),
+            read_request: Some(Duration::from_secs(1)),
+            write: Some(Duration::from_secs(1)),
+        })
+        .keep_connection_alive();
+
+        picoserve::listen_and_serve(
+            0,
+            &app,
+            &config,
+            stack,
+            port,
+            &mut tcp_rx_buffer,
+            &mut tcp_tx_buffer,
+            &mut http_buffer,
+        )
+        .await
     }
 }
