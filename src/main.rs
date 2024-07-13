@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+#![feature(async_closure)]
 
 mod app;
 mod buttons;
@@ -18,22 +19,21 @@ mod system;
 mod system_app;
 mod time;
 
-use display::Display;
+use panic_halt as _;
+
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Input, Pull};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
 
-use defmt_rtt as _;
-use galactic_unicorn_embassy::pins::UnicornSensorPins;
-use panic_halt as _;
-
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
+use galactic_unicorn_embassy::pins::UnicornSensorPins;
 
 use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
 };
+use crate::display::Display;
 use crate::mqtt::MqttReceiveMessage;
 
 #[embassy_executor::main]
