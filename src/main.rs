@@ -19,6 +19,7 @@ mod system;
 mod system_app;
 mod time;
 
+use defmt_rtt as _;
 use panic_halt as _;
 
 use embassy_executor::Spawner;
