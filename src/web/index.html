@@ -4,11 +4,71 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Galactic Unicorn Config</title>
+    <title>Galactic Unicorn</title>
+    <link rel="stylesheet" type="text/css" href="index.css">
 </head>
 
 <body>
-    <h1>Set up your galactic unicorn here</h1>
+    <header>
+        <h1>Galactic Unicorn Control Panel</h1>
+    </header>
+    <main>
+        <section id="settings">
+            <h2>Settings</h2>
+            <form id="settings-form" method="post">
+                <div class="form-field">
+                    <label for="wifi-network-input">WiFi Network <span class="required">*</span>:</label>
+                    <input type="text" id="wifi-network-input" name="wifi_network" value="wifi-name" required>
+                </div>
+                <div class="form-field">
+                    <label for="wifi-password-input">WiFi Password <span class="required">*</span>:</label>
+                    <input type="password" id="wifi-password-input" name="wifi_password" value="password" required>
+                </div>
+                <div class="form-field">
+                    <label for="ip-address-input">IP Address <span class="required">*</span>:</label>
+                    <input type="text" id="ip-address-input" name="ip_address" value="192.168.1.21" required>
+                </div>
+                <div class="form-field">
+                    <label for="prefix-length-input">Prefix Length <span class="required">*</span>:</label>
+                    <input type="number" id="prefix-length-input" name="prefix_length" value="24" required>
+                </div>
+                <div class="form-field">
+                    <label for="gateway-input">Gateway <span class="required">*</span>:</label>
+                    <input type="text" id="gateway-input" name="gateway" value="192.168.1.254" required>
+                </div>
+                <div class="form-field">
+                    <label for="mqtt-broker-input">MQTT Broker <span class="required">*</span>:</label>
+                    <input type="text" id="mqtt-broker-input" name="mqtt_broker" value="192.168.1.20" required>
+                </div>
+                <div class="form-field">
+                    <label for="mqtt-broker-port-input">MQTT Broker Port <span class="required">*</span>:</label>
+                    <input type="number" id="mqtt-broker-port-input" name="mqtt_broker_port" value="1883" required>
+                </div>
+                <div class="form-field">
+                    <label for="mqtt-username-input">MQTT Username <span class="optional">(Optional)</span>:</label>
+                    <input type="text" id="mqtt-username-input" name="mqtt_username">
+                </div>
+                <div class="form-field">
+                    <label for="mqtt-password-input">MQTT Password <span class="optional">(Optional)</span>:</label>
+                    <input type="password" id="mqtt-password-input" name="mqtt_password">
+                </div>
+                <div class="form-field">
+                    <label for="base-mqtt-topic-input">Base MQTT Topic <span class="required">*</span>:</label>
+                    <input type="text" id="base-mqtt-topic-input" name="base_mqtt_topic" value="galactic_unicorn" required>
+                </div>
+                <div class="form-field">
+                    <label for="device-id-input">Device ID <span class="required">*</span>:</label>
+                    <input type="text" id="device-id-input" name="device_id" value="galactic_unicorn" required>
+                </div>
+                <div class="form-field">
+                    <label for="hass-base-mqtt-topic-input">Hass Base MQTT Topic <span
+                            class="required">*</span>:</label>
+                    <input type="text" id="hass-base-mqtt-topic-input" name="hass_base_mqtt_topic" value="homeassistant" required>
+                </div>
+                <button type="submit">Save Settings</button>
+            </form>
+        </section>
+    </main>
 </body>
 
 </html>

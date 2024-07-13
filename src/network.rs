@@ -161,7 +161,7 @@ pub mod access_point {
     use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
     use embassy_time::{Duration, Timer};
     use picoserve::routing::get;
-    use static_cell::StaticCell;
+    use static_cell::{make_static, StaticCell};
 
     use crate::{
         config::*,
@@ -245,7 +245,61 @@ pub mod access_point {
         // wait for a lease to be given before continuing
         LEASE_GIVEN.wait().await;
 
-        spawner.spawn(picoserve_task(stack)).unwrap();
+        fn make_app() -> picoserve::Router<AppRouter> {
+            picoserve::Router::new()
+                .route(
+                    "/",
+                    get(async || picoserve::response::File::html(include_str!("./web/index.html")))
+                        .post(
+                            |picoserve::extract::Form(Settings {
+                                 wifi_network,
+                                 wifi_password,
+                                 ip_address,
+                                 prefix_length,
+                                 gateway,
+                                 mqtt_broker,
+                                 mqtt_broker_port,
+                                 mqtt_username,
+                                 mqtt_password,
+                                 base_mqtt_topic,
+                                 device_id,
+                                 hass_base_mqtt_topic,
+                             })| {
+                                picoserve::response::DebugValue((
+                                    ("wifi_network", wifi_network),
+                                    ("wifi_password", wifi_password),
+                                    ("ip_address", ip_address),
+                                    ("prefix_length", prefix_length),
+                                    ("gateway", gateway),
+                                    ("mqtt_broker", mqtt_broker),
+                                    ("mqtt_broker_port", mqtt_broker_port),
+                                    ("mqtt_username", mqtt_username),
+                                    ("mqtt_password", mqtt_password),
+                                    ("base_mqtt_topic", base_mqtt_topic),
+                                    ("device_id", device_id),
+                                    ("hass_base_mqtt_topic", hass_base_mqtt_topic),
+                                ))
+                            },
+                        ),
+                )
+                .route(
+                    "/index.css",
+                    get(|| picoserve::response::File::css(include_str!("./web/index.css"))),
+                )
+        }
+
+        let app = make_static!(make_app());
+
+        let config = make_static!(picoserve::Config::new(picoserve::Timeouts {
+            start_read_request: Some(Duration::from_secs(5)),
+            read_request: Some(Duration::from_secs(1)),
+            write: Some(Duration::from_secs(1)),
+        })
+        .keep_connection_alive());
+
+        for id in 0..WEB_TASK_POOL_SIZE {
+            spawner.must_spawn(picoserve_task(stack, id, app, config));
+        }
 
         // once a lease has been given, inform the user with an instruction
         DisplayTextMessage::from_app("Now go to 192.168.1.254 in your browser!", None, None, None)
@@ -305,30 +359,27 @@ pub mod access_point {
             .unwrap();
     }
 
+    const WEB_TASK_POOL_SIZE: usize = 3;
+
+    type AppRouter = impl picoserve::routing::PathRouter;
+
     /// Start and run the web server.
-    #[embassy_executor::task]
-    async fn picoserve_task(stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>) -> ! {
+    #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
+    async fn picoserve_task(
+        stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>,
+        id: usize,
+        app: &'static picoserve::Router<AppRouter>,
+        config: &'static picoserve::Config<Duration>,
+    ) -> ! {
         let port = 80;
         let mut tcp_rx_buffer = [0; 1024];
         let mut tcp_tx_buffer = [0; 1024];
         let mut http_buffer = [0; 2048];
 
-        let app = picoserve::Router::new().route(
-            "/",
-            get(|| picoserve::response::File::html(include_str!("./web/index.html"))),
-        );
-
-        let config = picoserve::Config::new(picoserve::Timeouts {
-            start_read_request: Some(Duration::from_secs(5)),
-            read_request: Some(Duration::from_secs(1)),
-            write: Some(Duration::from_secs(1)),
-        })
-        .keep_connection_alive();
-
         picoserve::listen_and_serve(
-            0,
-            &app,
-            &config,
+            id,
+            app,
+            config,
             stack,
             port,
             &mut tcp_rx_buffer,
@@ -336,5 +387,23 @@ pub mod access_point {
             &mut http_buffer,
         )
         .await
+    }
+
+    const MAX_STR_LEN: usize = 32;
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Settings {
+        wifi_network: heapless::String<MAX_STR_LEN>,
+        wifi_password: heapless::String<MAX_STR_LEN>,
+        ip_address: heapless::String<MAX_STR_LEN>,
+        prefix_length: u8,
+        gateway: heapless::String<MAX_STR_LEN>,
+        mqtt_broker: Option<heapless::String<MAX_STR_LEN>>,
+        mqtt_broker_port: u16,
+        mqtt_username: Option<heapless::String<MAX_STR_LEN>>,
+        mqtt_password: Option<heapless::String<MAX_STR_LEN>>,
+        base_mqtt_topic: heapless::String<MAX_STR_LEN>,
+        device_id: heapless::String<MAX_STR_LEN>,
+        hass_base_mqtt_topic: heapless::String<MAX_STR_LEN>,
     }
 }

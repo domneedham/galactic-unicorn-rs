@@ -67,6 +67,7 @@ edge-nal = { version = "0.2.0", git = "https://github.com/ivmarkov/edge-net" }
 edge-nal-embassy = { version = "0.2.0", git = "https://github.com/ivmarkov/edge-net" }
 edge-dhcp = { version = "0.2.0", git = "https://github.com/ivmarkov/edge-net" }
 picoserve = { version = "0.11.1", features = ["embassy"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
 
 # cargo build/run
 [profile.dev]

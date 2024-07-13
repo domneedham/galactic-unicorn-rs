@@ -48,10 +48,10 @@ static CHANGE_COLOR_CHANNEL: PubSubChannel<ThreadModeRawMutex, Rgb888, 1, 2, 1> 
 static INTERRUPT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 1> = Channel::new();
 
 /// Channel for messages from MQTT.
-static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 8> = Channel::new();
+static MQTT_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 4> = Channel::new();
 
 /// Channel for messages from apps.
-static APP_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 8> = Channel::new();
+static APP_DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, DisplayMessage, 4> = Channel::new();
 
 /// Signal for auto light feature enable/disable.
 static AUTO_LIGHT_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
