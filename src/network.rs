@@ -143,6 +143,7 @@ async fn monitor_network_task(app_state: &'static SystemState) {
 pub mod access_point {
     use core::net::{IpAddr, SocketAddr};
 
+    use cortex_m::peripheral::SCB;
     use cyw43_pio::PioSpi;
     use edge_dhcp::{
         server::{Server, ServerOptions},
@@ -166,7 +167,9 @@ pub mod access_point {
     use crate::{
         config::*,
         display::messages::DisplayTextMessage,
+        flash,
         network::{net_task, wifi_task, PioIrqs},
+        settings::Settings,
     };
 
     /// Signal for when the DHCP server has given a lease.
@@ -251,34 +254,39 @@ pub mod access_point {
                     "/",
                     get(async || picoserve::response::File::html(include_str!("./web/index.html")))
                         .post(
-                            |picoserve::extract::Form(Settings {
-                                 wifi_network,
-                                 wifi_password,
-                                 ip_address,
-                                 prefix_length,
-                                 gateway,
-                                 mqtt_broker,
-                                 mqtt_broker_port,
-                                 mqtt_username,
-                                 mqtt_password,
-                                 base_mqtt_topic,
-                                 device_id,
-                                 hass_base_mqtt_topic,
-                             })| {
-                                picoserve::response::DebugValue((
-                                    ("wifi_network", wifi_network),
-                                    ("wifi_password", wifi_password),
-                                    ("ip_address", ip_address),
-                                    ("prefix_length", prefix_length),
-                                    ("gateway", gateway),
-                                    ("mqtt_broker", mqtt_broker),
-                                    ("mqtt_broker_port", mqtt_broker_port),
-                                    ("mqtt_username", mqtt_username),
-                                    ("mqtt_password", mqtt_password),
-                                    ("base_mqtt_topic", base_mqtt_topic),
-                                    ("device_id", device_id),
-                                    ("hass_base_mqtt_topic", hass_base_mqtt_topic),
+                            async |picoserve::extract::Form(crate::settings::Settings {
+                                       wifi_network,
+                                       wifi_password,
+                                       ip_address,
+                                       prefix_length,
+                                       gateway,
+                                       mqtt_broker,
+                                       mqtt_broker_port,
+                                       mqtt_username,
+                                       mqtt_password,
+                                       base_mqtt_topic,
+                                       device_id,
+                                       hass_base_mqtt_topic,
+                                       is_initialized,
+                                   })| {
+                                flash::write_to_flash(&Settings::new(
+                                    wifi_network,
+                                    wifi_password,
+                                    ip_address,
+                                    prefix_length,
+                                    gateway,
+                                    mqtt_broker,
+                                    mqtt_broker_port,
+                                    mqtt_username,
+                                    mqtt_password,
+                                    base_mqtt_topic,
+                                    device_id,
+                                    hass_base_mqtt_topic,
+                                    is_initialized,
                                 ))
+                                .await;
+                                picoserve::response::DebugValue("Done");
+                                SCB::sys_reset();
                             },
                         ),
                 )
@@ -387,23 +395,5 @@ pub mod access_point {
             &mut http_buffer,
         )
         .await
-    }
-
-    const MAX_STR_LEN: usize = 32;
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct Settings {
-        wifi_network: heapless::String<MAX_STR_LEN>,
-        wifi_password: heapless::String<MAX_STR_LEN>,
-        ip_address: heapless::String<MAX_STR_LEN>,
-        prefix_length: u8,
-        gateway: heapless::String<MAX_STR_LEN>,
-        mqtt_broker: Option<heapless::String<MAX_STR_LEN>>,
-        mqtt_broker_port: u16,
-        mqtt_username: Option<heapless::String<MAX_STR_LEN>>,
-        mqtt_password: Option<heapless::String<MAX_STR_LEN>>,
-        base_mqtt_topic: heapless::String<MAX_STR_LEN>,
-        device_id: heapless::String<MAX_STR_LEN>,
-        hass_base_mqtt_topic: heapless::String<MAX_STR_LEN>,
     }
 }

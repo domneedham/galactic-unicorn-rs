@@ -11,10 +11,12 @@ mod clock_app;
 mod config;
 mod display;
 mod effects_app;
+mod flash;
 mod fonts;
 mod mqtt;
 mod mqtt_app;
 mod network;
+mod settings;
 mod system;
 mod system_app;
 mod time;
@@ -30,6 +32,10 @@ use embassy_sync::pubsub::PubSubChannel;
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
 use galactic_unicorn_embassy::pins::UnicornSensorPins;
+use settings::Settings;
+
+use flash::FlashStorable;
+use flash::FLASH_SIZE;
 
 use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
@@ -77,7 +83,14 @@ async fn main(spawner: Spawner) {
         .spawn(brightness_down_task(button_pins.brightness_down))
         .unwrap();
 
-    if true {
+    let flash = embassy_rp::flash::Flash::<_, embassy_rp::flash::Async, FLASH_SIZE>::new(
+        p.FLASH, p.DMA_CH2,
+    );
+    flash::init(flash).await;
+
+    let settings = flash::read_from_flash::<Settings, { settings::Settings::MAX_SIZE }>().await;
+
+    if !settings.is_initialized {
         network::access_point::create_network(
             spawner, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
         )
