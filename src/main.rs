@@ -36,6 +36,7 @@ use settings::Settings;
 
 use flash::FlashStorable;
 use flash::FLASH_SIZE;
+use static_cell::make_static;
 
 use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
@@ -98,6 +99,8 @@ async fn main(spawner: Spawner) {
         return;
     }
 
+    let settings = make_static!(settings);
+
     let app_state = system::SystemState::new();
     let system_app = system_app::SystemApp::new();
     let time = time::Time::new();
@@ -119,7 +122,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
 
     let stack = network::create_and_join_network(
-        spawner, app_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
+        spawner, app_state, &settings, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
     )
     .await;
 
@@ -136,12 +139,13 @@ async fn main(spawner: Spawner) {
 
     // mqtt clients
     spawner
-        .spawn(mqtt::clients::mqtt_send_client(stack))
+        .spawn(mqtt::clients::mqtt_send_client(stack, settings))
         .unwrap();
 
     spawner
         .spawn(mqtt::clients::mqtt_receive_client(
             stack,
+            settings,
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
             MQTT_APP_CHANNEL.publisher().unwrap(),
             MQTT_SYSTEM_CHANNEL.publisher().unwrap(),
@@ -170,6 +174,7 @@ async fn main(spawner: Spawner) {
 
     spawner
         .spawn(mqtt::homeassistant::hass_discovery_task(
+            settings,
             display,
             app_controller,
         ))

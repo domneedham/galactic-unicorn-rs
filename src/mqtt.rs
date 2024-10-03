@@ -24,7 +24,7 @@ static MESSAGE_POOL: [Mutex<ThreadModeRawMutex, MqttMessage>; 4] = [
 
 /// Message to be sent to the MQTT broker.
 pub struct MqttMessage {
-    topic: &'static str,
+    topic: String<256>,
     text: String<512>,
     qos: QualityOfService,
     retain: bool,
@@ -34,7 +34,7 @@ impl MqttMessage {
     /// Create a new MQTT message.
     const fn new() -> Self {
         MqttMessage {
-            topic: "",
+            topic: String::new(),
             text: String::new(),
             qos: QualityOfService::QoS0,
             retain: false,
@@ -42,8 +42,9 @@ impl MqttMessage {
     }
 
     /// Internal reuse of a MQTT message.
-    fn reuse(&mut self, topic: &'static str, content: &str, qos: QualityOfService, retain: bool) {
-        self.topic = topic;
+    fn reuse(&mut self, topic: &str, content: &str, qos: QualityOfService, retain: bool) {
+        self.topic.clear();
+        self.topic.push_str(topic).unwrap();
         self.text.clear();
         self.text.push_str(content).unwrap();
         self.qos = qos;
@@ -51,7 +52,7 @@ impl MqttMessage {
     }
 
     /// Add a state message into the send queue.
-    pub async fn enqueue_state(topic: &'static str, content: &str) {
+    pub async fn enqueue_state(topic: &str, content: &str) {
         Self::enqueue(topic, content, QualityOfService::QoS0, false).await;
     }
 
@@ -61,7 +62,7 @@ impl MqttMessage {
     }
 
     /// Add a message into the send queue.
-    pub async fn enqueue(topic: &'static str, content: &str, qos: QualityOfService, retain: bool) {
+    pub async fn enqueue(topic: &str, content: &str, qos: QualityOfService, retain: bool) {
         let mut queued = false;
         while !queued {
             for msg_mutex in &MESSAGE_POOL {
@@ -147,7 +148,9 @@ pub mod topics {
 }
 
 pub mod clients {
-    use constcat::concat;
+    use core::fmt::Write;
+    use core::str::FromStr;
+
     use cortex_m::singleton;
     use embassy_futures::select::{select, Either};
     use embassy_net::{tcp::TcpSocket, Ipv4Address, Stack};
@@ -155,7 +158,7 @@ pub mod clients {
         blocking_mutex::raw::ThreadModeRawMutex, pubsub::Publisher, signal::Signal,
     };
     use embassy_time::Timer;
-    use heapless::Vec;
+    use heapless::{String, Vec};
     use rust_mqtt::{
         client::{
             client::MqttClient,
@@ -173,10 +176,7 @@ pub mod clients {
         },
         MqttMessage, MqttReceiveMessage, SEND_CHANNEL,
     };
-    use crate::config::{
-        DEVICE_ID, HASS_BASE_MQTT_TOPIC, MQTT_BROKER_A1, MQTT_BROKER_A2, MQTT_BROKER_A3,
-        MQTT_BROKER_A4, MQTT_BROKER_PORT, MQTT_PASSWORD, MQTT_USERNAME,
-    };
+    use crate::settings::Settings;
 
     /// Signal for when the send client has an error.
     pub static SEND_CLIENT_ERROR: Signal<ThreadModeRawMutex, bool> = Signal::new();
@@ -193,7 +193,8 @@ pub mod clients {
     /// Create an MQTT client and connect it to the broker.
     async fn create_client<'a>(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
-        client_type: &'static str,
+        settings: &'static Settings,
+        client_type: &'a str,
         socket_rx_buffer: &'a mut [u8],
         socket_tx_buffer: &'a mut [u8],
         client_rx_buffer: &'a mut [u8],
@@ -201,22 +202,31 @@ pub mod clients {
     ) -> MqttClient<'a, TcpSocket<'a>, 5, CountingRng> {
         let mut socket = TcpSocket::new(stack, socket_rx_buffer, socket_tx_buffer);
         socket.set_timeout(None);
-        let host_addr = Ipv4Address::new(
-            MQTT_BROKER_A1,
-            MQTT_BROKER_A2,
-            MQTT_BROKER_A3,
-            MQTT_BROKER_A4,
-        );
-        socket.connect((host_addr, MQTT_BROKER_PORT)).await.unwrap();
+        // let host_addr = Ipv4Address::new(
+        //     MQTT_BROKER_A1,
+        //     MQTT_BROKER_A2,
+        //     MQTT_BROKER_A3,
+        //     MQTT_BROKER_A4,
+        // );
+
+        let host_addr = Ipv4Address::from_str(&settings.mqtt_broker.as_ref().unwrap()).unwrap();
+
+        socket
+            .connect((host_addr, settings.mqtt_broker_port))
+            .await
+            .unwrap();
 
         let mut config = ClientConfig::new(MqttVersion::MQTTv5, CountingRng(20000));
         config.max_packet_size = 100;
         config.add_max_subscribe_qos(QualityOfService::QoS1);
         config.add_client_id(client_type.into());
 
-        if !MQTT_USERNAME.is_empty() {
-            config.add_username(MQTT_USERNAME);
-            config.add_password(MQTT_PASSWORD);
+        if let Some(username) = &settings.mqtt_username {
+            config.add_username(&username);
+        }
+
+        if let Some(password) = &settings.mqtt_password {
+            config.add_password(&password);
         }
 
         let mut client: MqttClient<'_, TcpSocket<'_>, 5, CountingRng> = MqttClient::<_, 5, _>::new(
@@ -235,15 +245,23 @@ pub mod clients {
 
     /// Send client for MQTT messages. Polls the `SEND_CHANNEL` to know when to send a message.
     #[embassy_executor::task]
-    pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
+    pub async fn mqtt_send_client(
+        stack: &'static Stack<cyw43::NetDriver<'static>>,
+        settings: &'static Settings,
+    ) {
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
         let socket_tx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
         let client_rx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
         let client_tx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
 
+        let mut client_type: String<64> = String::new();
+        let dev_id = &settings.device_id;
+        write!(client_type, "{dev_id}_sender").unwrap();
+
         let mut client = create_client(
             stack,
-            concat!(DEVICE_ID, "_sender"),
+            settings,
+            &client_type,
             socket_rx_buffer,
             socket_tx_buffer,
             client_rx_buffer,
@@ -259,7 +277,7 @@ pub mod clients {
                     Either::First(message) => {
                         let result = client
                             .send_message(
-                                message.topic,
+                                &message.topic,
                                 message.text.as_bytes(),
                                 message.qos,
                                 message.retain,
@@ -293,6 +311,7 @@ pub mod clients {
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
         stack: &'static Stack<cyw43::NetDriver<'static>>,
+        settings: &'static Settings,
         display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
@@ -302,9 +321,14 @@ pub mod clients {
         let client_rx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
         let client_tx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
 
+        let mut client_type: String<64> = String::new();
+        let dev_id = &settings.device_id;
+        write!(client_type, "{dev_id}_receiver").unwrap();
+
         let mut client = create_client(
             stack,
-            concat!(DEVICE_ID, "_receiver"),
+            settings,
+            &client_type,
             socket_rx_buffer,
             socket_tx_buffer,
             client_rx_buffer,
@@ -312,6 +336,7 @@ pub mod clients {
         )
         .await;
 
+        let hass_topic = homeassistant::create_status_topic(&settings.hass_base_mqtt_topic);
         let topics: Vec<&str, 8> = Vec::from_slice(&[
             BRIGHTNESS_SET_TOPIC,
             RGB_SET_TOPIC,
@@ -320,7 +345,7 @@ pub mod clients {
             CLOCK_APP_SET_TOPIC,
             AUTO_BRIGHTNESS_SET_TOPIC,
             NTP_SYNC_TOPIC,
-            homeassistant::HASS_STATUS_TOPIC,
+            &hass_topic,
         ])
         .unwrap();
 
@@ -344,7 +369,7 @@ pub mod clients {
                                 app_publisher.publish(message).await;
                             } else if mqtt_message.0.contains("system") {
                                 system_publisher.publish(message).await;
-                            } else if mqtt_message.0.contains(HASS_BASE_MQTT_TOPIC) {
+                            } else if mqtt_message.0.contains(&*settings.hass_base_mqtt_topic) {
                                 homeassistant::HASS_RECIEVE_CHANNEL.send(message).await;
                             }
 
@@ -436,43 +461,44 @@ pub mod clients {
 pub mod homeassistant {
     use core::fmt::Write;
 
-    use constcat::concat;
-
     use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
     use embassy_sync::channel::Channel;
     use embassy_time::Timer;
     use heapless::String;
     use rust_mqtt::packet::v5::publish_packet::QualityOfService;
 
-    use crate::app::AppController;
-    use crate::config::{DEVICE_ID, HASS_BASE_MQTT_TOPIC};
     use crate::display::Display;
     use crate::mqtt::MqttMessage;
+    use crate::{app::AppController, settings::Settings};
 
     use super::{topics::*, MqttReceiveMessage};
-
-    pub const HASS_STATUS_TOPIC: &str = concat!(HASS_BASE_MQTT_TOPIC, "/", STATUS);
 
     /// Channel that messages from home assistant MQTT will be published in to.
     pub static HASS_RECIEVE_CHANNEL: Channel<ThreadModeRawMutex, MqttReceiveMessage, 2> =
         Channel::new();
 
+    pub fn create_status_topic(base_topic: &str) -> String<64> {
+        let mut hass_status_topic: String<64> = String::new();
+        write!(hass_status_topic, "{base_topic}/{STATUS}").unwrap();
+        hass_status_topic
+    }
+
     /// Send the home assistant discovery messages to auto configure the device.
-    async fn send_home_assistant_discovery() {
+    async fn send_home_assistant_discovery(device_id: &str, hass_base_mqtt_topic: &str) {
         // clock effect
-        let topic = concat!(
-            HASS_BASE_MQTT_TOPIC,
-            "/select/",
-            DEVICE_ID,
-            "/clock_effect/config"
-        );
+        let mut topic: String<128> = String::new();
+        write!(
+            topic,
+            "{hass_base_mqtt_topic}/select/{device_id}/clock_effect/config"
+        )
+        .unwrap();
         let mut payload = String::<512>::new();
         write!(
             payload,
             r#"
 {{
   "dev" : {{
-    "ids": "{DEVICE_ID}",
+    "ids": "{device_id}",
     "name": "Galactic Unicorn",
     "manufacturer": "Pimoroni",
     "model": "Galactic Unicorn"
@@ -481,69 +507,80 @@ pub mod homeassistant {
   "stat_t": "{CLOCK_APP_STATE_TOPIC}",
   "cmd_t": "{CLOCK_APP_SET_TOPIC}",
   "options": ["Rainbow", "Color"],
-  "uniq_id": "{DEVICE_ID}_clock_01"
+  "uniq_id": "{device_id}_clock_01"
 }}"#
         )
         .unwrap();
-        MqttMessage::enqueue_hass(topic, &payload).await;
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+        drop(topic);
+        drop(payload);
 
         // active app
-        let topic = concat!(
-            HASS_BASE_MQTT_TOPIC,
-            "/select/",
-            DEVICE_ID,
-            "/active_app/config"
-        );
+        let mut topic: String<128> = String::new();
+        write!(
+            topic,
+            "{hass_base_mqtt_topic}/select/{device_id}/active_app/config"
+        )
+        .unwrap();
         let mut payload = String::<256>::new();
         write!(
             payload,
             r#"
 {{
   "dev" : {{
-    "ids": "{DEVICE_ID}"
+    "ids": "{device_id}"
   }},
   "name": "Active app",
   "stat_t": "{APP_STATE_TOPIC}",
   "cmd_t": "{APP_SET_TOPIC}",
   "options": ["Clock", "Effects", "Mqtt"],
-  "uniq_id": "{DEVICE_ID}_apps_01"
+  "uniq_id": "{device_id}_apps_01"
 }}"#
         )
         .unwrap();
-        MqttMessage::enqueue_hass(topic, &payload).await;
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+        drop(topic);
+        drop(payload);
 
         // MQTT text message (as a notification from home assistant)
-        let topic = concat!(
-            HASS_BASE_MQTT_TOPIC,
-            "/notify/",
-            DEVICE_ID,
-            "/mqtt_message/config"
-        );
+        let mut topic: String<128> = String::new();
+        write!(
+            topic,
+            "{hass_base_mqtt_topic}/notify/{device_id}/mqtt_message/config"
+        )
+        .unwrap();
         let mut payload = String::<256>::new();
         write!(
             payload,
             r#"
 {{
   "dev" : {{
-    "ids": "{DEVICE_ID}"
+    "ids": "{device_id}"
   }},
   "name": "Display text",
   "cmd_t": "{TEXT_SET_TOPIC}",
-  "uniq_id": "{DEVICE_ID}_display_text_01"
+  "uniq_id": "{device_id}_display_text_01"
 }}"#
         )
         .unwrap();
-        MqttMessage::enqueue_hass(topic, &payload).await;
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+        drop(topic);
+        drop(payload);
 
         // display color and brightness
-        let topic = concat!(HASS_BASE_MQTT_TOPIC, "/light/", DEVICE_ID, "/board/config");
+        let mut topic: String<128> = String::new();
+        write!(
+            topic,
+            "{hass_base_mqtt_topic}/light/{device_id}/board/config"
+        )
+        .unwrap();
         let mut payload = String::<512>::new();
         write!(
             payload,
             r#"
 {{
   "dev" : {{
-    "ids": "{DEVICE_ID}"
+    "ids": "{device_id}"
   }},
   "name": "Display",
   "cmd_t": "{BRIGHTNESS_SET_TOPIC}",
@@ -553,58 +590,64 @@ pub mod homeassistant {
   "bri_stat_t": "{BRIGHTNESS_STATE_TOPIC}",
   "bri_cmd_t": "{BRIGHTNESS_SET_TOPIC}",
   "on_cmd_type": "brightness",
-  "uniq_id": "{DEVICE_ID}_light_01"
+  "uniq_id": "{device_id}_light_01"
 }}"#
         )
         .unwrap();
-        MqttMessage::enqueue_hass(topic, &payload).await;
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+        drop(topic);
+        drop(payload);
 
         // display auto brightness
-        let topic = concat!(
-            HASS_BASE_MQTT_TOPIC,
-            "/switch/",
-            DEVICE_ID,
-            "/auto_brightness/config"
-        );
+        let mut topic: String<128> = String::new();
+        write!(
+            topic,
+            "{hass_base_mqtt_topic}/switch/{device_id}/auto_brightness/config"
+        )
+        .unwrap();
         let mut payload = String::<256>::new();
         write!(
             payload,
             r#"
 {{
   "dev" : {{
-    "ids": "{DEVICE_ID}"
+    "ids": "{device_id}"
   }},
   "name": "Auto brightness",
   "cmd_t": "{AUTO_BRIGHTNESS_SET_TOPIC}",
   "stat_t": "{AUTO_BRIGHTNESS_STATE_TOPIC}",
-  "uniq_id": "{DEVICE_ID}_auto_brightness_01"
+  "uniq_id": "{device_id}_auto_brightness_01"
 }}"#
         )
         .unwrap();
-        MqttMessage::enqueue_hass(topic, &payload).await;
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+        drop(topic);
+        drop(payload);
 
         // force sync to NTP
-        let topic = concat!(
-            HASS_BASE_MQTT_TOPIC,
-            "/button/",
-            DEVICE_ID,
-            "/ntp_sync/config"
-        );
+        let mut topic: String<128> = String::new();
+        write!(
+            topic,
+            "{hass_base_mqtt_topic}/button/{device_id}/ntp_sync/config"
+        )
+        .unwrap();
         let mut payload = String::<256>::new();
         write!(
             payload,
             r#"
 {{
   "dev" : {{
-    "ids": "{DEVICE_ID}"
+    "ids": "{device_id}"
   }},
   "name": "NTP Sync",
   "cmd_t": "{NTP_SYNC_TOPIC}",
-  "uniq_id": "{DEVICE_ID}_button_01"
+  "uniq_id": "{device_id}_button_01"
 }}"#
         )
         .unwrap();
-        MqttMessage::enqueue_hass(topic, &payload).await;
+        MqttMessage::enqueue_hass(&topic, &payload).await;
+        drop(topic);
+        drop(payload);
     }
 
     /// Send app states over MQTT.
@@ -620,7 +663,7 @@ pub mod homeassistant {
 
     impl MqttMessage {
         /// Add a home assistant message into the send queue.
-        async fn enqueue_hass(topic: &'static str, content: &str) {
+        async fn enqueue_hass(topic: &str, content: &str) {
             Self::enqueue(topic, content, QualityOfService::QoS0, false).await;
         }
     }
@@ -628,17 +671,22 @@ pub mod homeassistant {
     /// Waits for an MQTT message for home assistant status and will republish discovery snd state.
     #[embassy_executor::task]
     pub async fn hass_discovery_task(
+        settings: &'static Settings,
         display: &'static Display<'static>,
         app_controller: &'static AppController,
     ) {
-        send_home_assistant_discovery().await;
+        let device_id = &settings.device_id;
+        let hass_base_mqtt_topic = &settings.hass_base_mqtt_topic;
+        let hass_status_topic = create_status_topic(&hass_base_mqtt_topic);
+
+        send_home_assistant_discovery(device_id, hass_base_mqtt_topic).await;
         Timer::after_secs(3).await;
         send_states(display, app_controller).await;
 
         loop {
             let message = HASS_RECIEVE_CHANNEL.receive().await;
-            if message.topic == HASS_STATUS_TOPIC {
-                send_home_assistant_discovery().await;
+            if message.topic == hass_status_topic {
+                send_home_assistant_discovery(device_id, hass_base_mqtt_topic).await;
                 Timer::after_secs(1).await;
                 send_states(display, app_controller).await;
             }

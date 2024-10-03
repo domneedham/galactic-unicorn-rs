@@ -15,6 +15,7 @@ use static_cell::StaticCell;
 use crate::{
     config::*,
     mqtt::clients::{RECEIVE_CLIENT_ERROR, SEND_CLIENT_ERROR},
+    settings::Settings,
     system::SystemState,
 };
 
@@ -52,6 +53,7 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 pub async fn create_and_join_network(
     spawner: Spawner,
     app_state: &'static SystemState,
+    settings: &Settings,
     pin_23: PIN_23,
     pin_24: PIN_24,
     pin_25: PIN_25,
@@ -109,7 +111,10 @@ pub async fn create_and_join_network(
     spawner.spawn(net_task(stack)).unwrap();
 
     loop {
-        match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
+        match control
+            .join_wpa2(&settings.wifi_network, &settings.wifi_password)
+            .await
+        {
             Ok(_) => break,
             Err(_) => {
                 Timer::after(Duration::from_secs(2)).await;
