@@ -126,9 +126,10 @@ impl<'a> Display<'a> {
     /// Create the static ref to display.
     /// Must only be called once or will panic.
     pub fn new(
-        pio: PIO0,
-        dma: DMA_CH0,
-        adc: ADC,
+        pio: embassy_rp::Peri<'static, PIO0>,
+        dma: embassy_rp::Peri<'static, DMA_CH0>,
+        adc: embassy_rp::Peri<'static, ADC>,
+        usb: embassy_rp::Peri<'static, embassy_rp::peripherals::USB>,
         display_pins: UnicornDisplayPins,
         sensor_pins: UnicornSensorPins,
         spawner: Spawner,
@@ -139,7 +140,8 @@ impl<'a> Display<'a> {
                 display_pins,
                 sensor_pins,
                 adc,
-                dma
+                dma,
+                usb
             )),
             current_graphics: Mutex::new(UnicornGraphics::new()),
             current_color: Mutex::new(Rgb888::CSS_PURPLE),

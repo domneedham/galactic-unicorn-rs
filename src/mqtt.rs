@@ -192,7 +192,7 @@ pub mod clients {
 
     /// Create an MQTT client and connect it to the broker.
     async fn create_client<'a>(
-        stack: &'static Stack<cyw43::NetDriver<'static>>,
+        stack: Stack<'static>,
         client_type: &'static str,
         socket_rx_buffer: &'a mut [u8],
         socket_tx_buffer: &'a mut [u8],
@@ -235,7 +235,7 @@ pub mod clients {
 
     /// Send client for MQTT messages. Polls the `SEND_CHANNEL` to know when to send a message.
     #[embassy_executor::task]
-    pub async fn mqtt_send_client(stack: &'static Stack<cyw43::NetDriver<'static>>) {
+    pub async fn mqtt_send_client(stack: Stack<'static>) {
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
         let socket_tx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
         let client_rx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
@@ -292,7 +292,7 @@ pub mod clients {
     /// Receive client for MQTT messages. Publishes into the relevent publisher.
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
-        stack: &'static Stack<cyw43::NetDriver<'static>>,
+        stack: Stack<'static>,
         display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,

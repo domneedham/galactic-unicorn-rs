@@ -3,6 +3,8 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
+#![feature(ip_as_octets)]
 
 mod app;
 mod buttons;
@@ -56,18 +58,26 @@ async fn main(spawner: Spawner) {
     };
 
     let button_pins = UnicornButtonPins {
-        switch_a: Input::new(p.PIN_0, Pull::Up),
-        switch_b: Input::new(p.PIN_1, Pull::Up),
-        switch_c: Input::new(p.PIN_3, Pull::Up),
-        switch_d: Input::new(p.PIN_6, Pull::Up),
-        brightness_up: Input::new(p.PIN_21, Pull::Up),
-        brightness_down: Input::new(p.PIN_26, Pull::Up),
-        volume_up: Input::new(p.PIN_7, Pull::Up),
-        volume_down: Input::new(p.PIN_8, Pull::Up),
-        sleep: Input::new(p.PIN_27, Pull::Up),
+        switch_a: p.PIN_0,
+        switch_b: p.PIN_1,
+        switch_c: p.PIN_3,
+        switch_d: p.PIN_6,
+        brightness_up: p.PIN_21,
+        brightness_down: p.PIN_26,
+        volume_up: p.PIN_7,
+        volume_down: p.PIN_8,
+        sleep: p.PIN_27,
     };
 
-    let display = Display::new(p.PIO0, p.DMA_CH0, p.ADC, display_pins, sensor_pins, spawner);
+    let display = Display::new(
+        p.PIO0,
+        p.DMA_CH0,
+        p.ADC,
+        p.USB,
+        display_pins,
+        sensor_pins,
+        spawner,
+    );
 
     let app_state = system::SystemState::new();
     let system_app = system_app::SystemApp::new();

@@ -42,7 +42,7 @@ pub mod ntp {
     use embassy_futures::select::select;
     use embassy_net::{
         dns::DnsQueryType,
-        udp::{PacketMetadata, UdpSocket},
+        udp::{PacketMetadata, UdpMetadata, UdpSocket},
         IpEndpoint, Stack,
     };
     use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
@@ -133,11 +133,11 @@ pub mod ntp {
     }
 
     /// Convert embassy `IpEndpoint` into `SocketAddr`.
-    fn emb_endpoint_to_sock_addr(endpoint: IpEndpoint) -> SocketAddr {
-        let port = endpoint.port;
-        let addr = match endpoint.addr {
+    fn emb_endpoint_to_sock_addr(endpoint: UdpMetadata) -> SocketAddr {
+        let port = endpoint.endpoint.port;
+        let addr = match endpoint.endpoint.addr {
             embassy_net::IpAddress::Ipv4(ipv4) => {
-                let octets = ipv4.as_bytes();
+                let octets = ipv4.as_octets();
                 let ipv4_addr =
                     no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
                 no_std_net::IpAddr::V4(ipv4_addr)
@@ -190,7 +190,7 @@ pub mod ntp {
 
     /// NTP task for syncing to NTP.
     #[embassy_executor::task]
-    pub async fn ntp_worker(stack: &'static Stack<cyw43::NetDriver<'static>>, time: &'static Time) {
+    pub async fn ntp_worker(stack: Stack<'static>, time: &'static Time) {
         loop {
             let sleep_sec = match ntp_request(stack, time).await {
                 Err(_) => 10,
@@ -203,39 +203,36 @@ pub mod ntp {
     }
 
     /// Create an NTP request and set the value in `Time`.
-    async fn ntp_request(
-        stack: &'static Stack<cyw43::NetDriver<'static>>,
-        time: &'static Time,
-    ) -> Result<(), SntpcError> {
-        let mut addrs = stack.dns_query(POOL_NTP_ADDR, DnsQueryType::A).await?;
-        let addr = addrs.pop().ok_or(SntpcError::DnsEmptyResponse)?;
+    async fn ntp_request(stack: Stack<'static>, time: &'static Time) -> Result<(), SntpcError> {
+        // let mut addrs = stack.dns_query(POOL_NTP_ADDR, DnsQueryType::A).await?;
+        // let addr = addrs.pop().ok_or(SntpcError::DnsEmptyResponse)?;
 
-        let octets = addr.as_bytes();
-        let ipv4_addr = no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
-        let sock_addr = SocketAddr::new(no_std_net::IpAddr::V4(ipv4_addr), 123);
+        // let octets = addr.as_octets();
+        // let ipv4_addr = no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+        // let sock_addr = SocketAddr::new(no_std_net::IpAddr::V4(ipv4_addr), 123);
 
-        let mut rx_buffer = [0; 4096];
-        let mut tx_buffer = [0; 4096];
-        let mut rx_meta = [PacketMetadata::EMPTY; 16];
-        let mut tx_meta = [PacketMetadata::EMPTY; 16];
+        // let mut rx_buffer = [0; 4096];
+        // let mut tx_buffer = [0; 4096];
+        // let mut rx_meta = [PacketMetadata::EMPTY; 16];
+        // let mut tx_meta = [PacketMetadata::EMPTY; 16];
 
-        let mut socket = UdpSocket::new(
-            stack,
-            &mut rx_meta,
-            &mut rx_buffer,
-            &mut tx_meta,
-            &mut tx_buffer,
-        );
-        socket.bind(1234).unwrap();
+        // let mut socket = UdpSocket::new(
+        //     stack,
+        //     &mut rx_meta,
+        //     &mut rx_buffer,
+        //     &mut tx_meta,
+        //     &mut tx_buffer,
+        // );
+        // socket.bind(1234).unwrap();
 
-        let ntp_socket = NtpSocket { sock: socket };
-        let ntp_context = NtpContext::new(TimestampGen::new(time).await);
+        // let ntp_socket = NtpSocket { sock: socket };
+        // let ntp_context = NtpContext::new(TimestampGen::new(time).await);
 
-        let ntp_result = get_time(sock_addr, ntp_socket, ntp_context).await?;
-        let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0)
-            .ok_or(SntpcError::BadNtpResponse)?;
-        let now = now.with_timezone(&GB);
-        time.set_time(now).await;
+        // let ntp_result = get_time(sock_addr, ntp_socket, ntp_context).await?;
+        // let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0)
+        //     .ok_or(SntpcError::BadNtpResponse)?;
+        // let now = now.with_timezone(&GB);
+        // time.set_time(now).await;
 
         Ok(())
     }

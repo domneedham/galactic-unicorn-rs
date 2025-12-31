@@ -1,4 +1,5 @@
-use cyw43_pio::PioSpi;
+use cyw43::JoinOptions;
+use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
@@ -33,32 +34,28 @@ bind_interrupts!(struct Irqs {
 /// Cyw43 runner task.
 #[embassy_executor::task]
 async fn wifi_task(
-    runner: cyw43::Runner<
-        'static,
-        Output<'static, PIN_23>,
-        PioSpi<'static, PIN_25, PIO1, 0, DMA_CH1>,
-    >,
+    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO1, 0, DMA_CH1>>,
 ) -> ! {
     runner.run().await
 }
 
 /// Embassy net stack runner task.
 #[embassy_executor::task]
-async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
-    stack.run().await
+async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+    runner.run().await
 }
 
 /// Create and join the wifi network. Will wait until it has successfully joined.
 pub async fn create_and_join_network(
     spawner: Spawner,
     app_state: &'static SystemState,
-    pin_23: PIN_23,
-    pin_24: PIN_24,
-    pin_25: PIN_25,
-    pin_29: PIN_29,
-    pio_1: PIO1,
-    dma_ch1: DMA_CH1,
-) -> &'static Stack<cyw43::NetDriver<'static>> {
+    pin_23: embassy_rp::Peri<'static, PIN_23>,
+    pin_24: embassy_rp::Peri<'static, PIN_24>,
+    pin_25: embassy_rp::Peri<'static, PIN_25>,
+    pin_29: embassy_rp::Peri<'static, PIN_29>,
+    pio_1: embassy_rp::Peri<'static, PIO1>,
+    dma_ch1: embassy_rp::Peri<'static, DMA_CH1>,
+) -> Stack<'static> {
     let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
     let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
 
@@ -69,15 +66,16 @@ pub async fn create_and_join_network(
     let spi = PioSpi::new(
         &mut pio.common,
         pio.sm0,
+        DEFAULT_CLOCK_DIVIDER,
         pio.irq0,
         cs,
         pin_24,
         pin_29,
         dma_ch1,
     );
+
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
-
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
     spawner.spawn(wifi_task(runner)).unwrap();
 
@@ -97,19 +95,22 @@ pub async fn create_and_join_network(
     let seed = 0x0123_4567_89ab_cdef; // chosen by fair dice roll. guarenteed to be random.
 
     // Init network stack
-    static STACK: StaticCell<Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
+    static STACK: StaticCell<Stack<'static>> = StaticCell::new();
     static RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
-    let stack = &*STACK.init(Stack::new(
+    let (stack, runner) = embassy_net::new(
         net_device,
         config,
-        RESOURCES.init(StackResources::<10>::new()),
+        RESOURCES.init(StackResources::new()),
         seed,
-    ));
+    );
 
-    spawner.spawn(net_task(stack)).unwrap();
+    spawner.spawn(net_task(runner)).unwrap();
 
     loop {
-        match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
+        match control
+            .join(WIFI_NETWORK, JoinOptions::new(WIFI_PASSWORD.as_bytes()))
+            .await
+        {
             Ok(_) => break,
             Err(_) => {
                 Timer::after(Duration::from_secs(2)).await;
