@@ -2,12 +2,12 @@ use cyw43::JoinOptions;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
+use embassy_net::{tcp::TcpSocket, Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_rp::{
     bind_interrupts,
     gpio::{Level, Output},
     peripherals::{DMA_CH1, PIN_23, PIN_24, PIN_25, PIN_29, PIO1},
-    pio::{InterruptHandler, Pio},
+    pio::{Common, InterruptHandler, Pio},
 };
 use embassy_time::{Duration, Timer};
 use heapless::Vec;
@@ -64,9 +64,13 @@ pub async fn create_and_join_network(
     // wifi
     let pwr = Output::new(pin_23, Level::Low);
     let cs = Output::new(pin_25, Level::High);
-    let mut pio = Pio::new(pio_1, Irqs);
+    let pio = Pio::new(pio_1, Irqs);
+
+    static PIO_COMMON: StaticCell<Common<PIO1>> = StaticCell::new();
+    let common = PIO_COMMON.init(pio.common);
+
     let spi = PioSpi::new(
-        &mut pio.common,
+        common,
         pio.sm0,
         DEFAULT_CLOCK_DIVIDER,
         pio.irq0,
@@ -88,34 +92,49 @@ pub async fn create_and_join_network(
         .await;
     log::info!("Network: WiFi chip initialized");
 
-    let mut addresses: Vec<Ipv4Address, 3> = Vec::new();
-    addresses.insert(0, Ipv4Address::new(8, 8, 8, 8)).unwrap(); // Google DNS
+    let mut config: Option<embassy_net::Config>;
+    if USE_DHCP {
+        log::info!("Network: Configuring DHCP");
+        config = Some(embassy_net::Config::dhcpv4(Default::default()));
+    } else {
+        log::info!("Network: Configuring static IP is not currently supported");
+        log::info!("Network: Configuring DHCP");
+        config = Some(embassy_net::Config::dhcpv4(Default::default()));
 
-    let static_ip = Ipv4Address::new(IP_A1, IP_A2, IP_A3, IP_A4);
-    let gateway_ip = Ipv4Address::new(GW_A1, GW_A2, GW_A3, GW_A4);
+        // let mut addresses: Vec<Ipv4Address, 3> = Vec::new();
+        // addresses.insert(0, Ipv4Address::new(8, 8, 8, 8)).unwrap(); // Google DNS
 
-    log::info!("Network: Configuring static IP: {:?}", static_ip);
-    log::info!("Network: Gateway: {:?}", gateway_ip);
-    log::info!("Network: DNS: 8.8.8.8");
+        // let static_ip = Ipv4Address::new(IP_A1, IP_A2, IP_A3, IP_A4);
+        // let gateway_ip = Ipv4Address::new(GW_A1, GW_A2, GW_A3, GW_A4);
 
-    let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-        address: Ipv4Cidr::new(static_ip, PREFIX_LENGTH),
-        dns_servers: addresses,
-        gateway: Some(gateway_ip),
-    });
+        // log::info!("Network: Configuring static IP: {:?}", static_ip);
+        // log::info!("Network: Gateway: {:?}", gateway_ip);
+        // log::info!("Network: DNS: 8.8.8.8");
+
+        // config = Some(embassy_net::Config::ipv4_static(
+        //     embassy_net::StaticConfigV4 {
+        //         address: Ipv4Cidr::new(static_ip, PREFIX_LENGTH),
+        //         dns_servers: addresses,
+        //         gateway: Some(gateway_ip),
+        //     },
+        // ));
+    }
+
     // Generate random seed
     let seed = 0x0123_4567_89ab_cdef; // chosen by fair dice roll. guaranteed to be random.
 
     // Init network stack
-    static RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<13>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(
         net_device,
-        config,
+        config.unwrap(),
         RESOURCES.init(StackResources::new()),
         seed,
     );
 
     spawner.spawn(net_task(runner)).unwrap();
+    // Small delay to ensure net_task has started before we proceed with WiFi join
+    Timer::after(Duration::from_millis(100)).await;
     log::info!("Network: Stack initialized");
 
     log::info!("Network: Joining WiFi network: {}", WIFI_NETWORK);

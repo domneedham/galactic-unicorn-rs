@@ -210,9 +210,32 @@ pub mod clients {
             MQTT_BROKER_A4,
         );
 
-        log::info!("MQTT {}: Connecting to broker at {:?}:{}", client_type, host_addr, MQTT_BROKER_PORT);
-        socket.connect((host_addr, MQTT_BROKER_PORT)).await.unwrap();
-        log::info!("MQTT {}: TCP connection established", client_type);
+        log::info!(
+            "MQTT {}: Connecting to broker at {:?}:{}",
+            client_type,
+            host_addr,
+            MQTT_BROKER_PORT
+        );
+        match socket.connect((host_addr, MQTT_BROKER_PORT)).await {
+            Ok(_) => log::info!("MQTT {}: TCP connection established", client_type),
+            Err(e) => {
+                log::error!("MQTT {}: TCP connection failed: {:?}", client_type, e);
+                // Loop forever with retries - this prevents panic but allows debugging
+                loop {
+                    log::error!("MQTT {}: Retrying connection in 5 seconds...", client_type);
+                    Timer::after_secs(5).await;
+                    match socket.connect((host_addr, MQTT_BROKER_PORT)).await {
+                        Ok(_) => {
+                            log::info!("MQTT {}: TCP connection established on retry", client_type);
+                            break;
+                        }
+                        Err(e) => {
+                            log::error!("MQTT {}: Retry failed: {:?}", client_type, e);
+                        }
+                    }
+                }
+            }
+        }
 
         let mut config = ClientConfig::new(MqttVersion::MQTTv5, CountingRng(20000));
         config.max_packet_size = 100;
@@ -270,7 +293,11 @@ pub mod clients {
                 match select(SEND_CHANNEL.receive(), Timer::after_secs(5)).await {
                     Either::First(message) => {
                         message_count += 1;
-                        log::info!("MQTT send client: Sending message #{} to topic: {}", message_count, message.topic);
+                        log::info!(
+                            "MQTT send client: Sending message #{} to topic: {}",
+                            message_count,
+                            message.topic
+                        );
 
                         let result = client
                             .send_message(
@@ -284,8 +311,15 @@ pub mod clients {
                         drop(message);
 
                         match &result {
-                            Ok(_) => log::info!("MQTT send client: Message #{} sent successfully", message_count),
-                            Err(e) => log::error!("MQTT send client: Failed to send message #{}: {:?}", message_count, get_reason_code(e)),
+                            Ok(_) => log::info!(
+                                "MQTT send client: Message #{} sent successfully",
+                                message_count
+                            ),
+                            Err(e) => log::error!(
+                                "MQTT send client: Failed to send message #{}: {:?}",
+                                message_count,
+                                get_reason_code(e)
+                            ),
                         }
 
                         result
@@ -310,7 +344,10 @@ pub mod clients {
                 }
                 Err(e) => {
                     if !was_previous_error {
-                        log::error!("MQTT send client: Connection error: {:?}", get_reason_code(&e));
+                        log::error!(
+                            "MQTT send client: Connection error: {:?}",
+                            get_reason_code(&e)
+                        );
                         SEND_CLIENT_ERROR.signal(true);
                         was_previous_error = true;
                     }
@@ -356,14 +393,20 @@ pub mod clients {
         ])
         .unwrap();
 
-        log::info!("MQTT receive client: Subscribing to {} topics", topics.len());
-        match client.subscribe_to_topics(&topics).await {
+        log::info!(
+            "MQTT receive client: Subscribing to {} topics",
+            topics.len()
+        );
+        match client.subscribe_to_topics::<8>(&topics).await {
             Ok(_) => {
                 log::info!("MQTT receive client: Successfully subscribed to all topics");
                 MqttMessage::enqueue_debug("Subscribed to topics").await
             }
             Err(code) => {
-                log::error!("MQTT receive client: Failed to subscribe: {:?}", get_reason_code(&code));
+                log::error!(
+                    "MQTT receive client: Failed to subscribe: {:?}",
+                    get_reason_code(&code)
+                );
                 send_reason_code(code).await
             }
         };
@@ -378,7 +421,11 @@ pub mod clients {
                     Either::First(received_message) => match received_message {
                         Ok(mqtt_message) => {
                             message_count += 1;
-                            log::info!("MQTT receive client: Received message #{} on topic: {}", message_count, mqtt_message.0);
+                            log::info!(
+                                "MQTT receive client: Received message #{} on topic: {}",
+                                message_count,
+                                mqtt_message.0
+                            );
 
                             let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
 
@@ -392,14 +439,19 @@ pub mod clients {
                                 log::debug!("MQTT receive client: Publishing to system channel");
                                 system_publisher.publish(message).await;
                             } else if mqtt_message.0.contains(HASS_BASE_MQTT_TOPIC) {
-                                log::debug!("MQTT receive client: Publishing to home assistant channel");
+                                log::debug!(
+                                    "MQTT receive client: Publishing to home assistant channel"
+                                );
                                 homeassistant::HASS_RECIEVE_CHANNEL.send(message).await;
                             }
 
                             Ok(())
                         }
                         Err(code) => {
-                            log::error!("MQTT receive client: Error receiving message: {:?}", get_reason_code(&code));
+                            log::error!(
+                                "MQTT receive client: Error receiving message: {:?}",
+                                get_reason_code(&code)
+                            );
                             Err(code)
                         }
                     },
@@ -423,7 +475,10 @@ pub mod clients {
                 }
                 Err(e) => {
                     if !was_previous_error {
-                        log::error!("MQTT receive client: Connection error: {:?}", get_reason_code(&e));
+                        log::error!(
+                            "MQTT receive client: Connection error: {:?}",
+                            get_reason_code(&e)
+                        );
                         RECEIVE_CLIENT_ERROR.signal(true);
                         was_previous_error = true;
                     }

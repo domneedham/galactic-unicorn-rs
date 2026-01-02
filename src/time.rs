@@ -115,13 +115,19 @@ pub mod ntp {
                 .to_socket_addrs()
                 .map_err(|_| SntpcError::ToSocketAddrs)?;
             let addr = addr_iter.next().ok_or(SntpcError::NoAddr)?;
-            self.sock
+            match self.sock
                 .send_to(buf, sock_addr_to_emb_endpoint(addr))
                 .await
-                .map_err(|_| SntpcError::UdpSend)
-                .unwrap();
-            log::info!("NTP socket: sent successfully");
-            Ok(buf.len())
+            {
+                Ok(_) => {
+                    log::info!("NTP socket: sent successfully");
+                    Ok(buf.len())
+                }
+                Err(e) => {
+                    log::error!("NTP socket: send failed: {:?}", e);
+                    Err(SntpcError::UdpSend.into())
+                }
+            }
         }
 
         /// Receive data from socket.
@@ -132,7 +138,10 @@ pub mod ntp {
                     log::info!("NTP socket: received {} bytes", size);
                     Ok((size, emb_endpoint_to_sock_addr(ip_endpoint)))
                 }
-                Err(_) => panic!("not exp"),
+                Err(e) => {
+                    log::error!("NTP socket: receive failed: {:?}", e);
+                    Err(sntpc::Error::Network)
+                }
             }
         }
     }
@@ -297,10 +306,11 @@ pub mod ntp {
     async fn try_ntp_sync(stack: Stack<'static>, time: &'static Time, sock_addr: SocketAddr) -> Result<(), SntpcError> {
         log::info!("Connecting to NTP server: {:?}", sock_addr);
 
-        let mut rx_buffer = [0; 4096];
-        let mut tx_buffer = [0; 4096];
-        let mut rx_meta = [PacketMetadata::EMPTY; 16];
-        let mut tx_meta = [PacketMetadata::EMPTY; 16];
+        // NTP packets are only 48 bytes, so 512 bytes is more than enough
+        let mut rx_buffer = [0; 512];
+        let mut tx_buffer = [0; 512];
+        let mut rx_meta = [PacketMetadata::EMPTY; 4];
+        let mut tx_meta = [PacketMetadata::EMPTY; 4];
 
         let mut socket = UdpSocket::new(
             stack,
@@ -309,7 +319,10 @@ pub mod ntp {
             &mut tx_meta,
             &mut tx_buffer,
         );
-        socket.bind(1234).unwrap();
+        if let Err(e) = socket.bind(1234) {
+            log::error!("Failed to bind UDP socket: {:?}", e);
+            return Err(SntpcError::Sntc(sntpc::Error::Network));
+        }
 
         log::info!("Socket bound, sending NTP request");
 
@@ -358,13 +371,18 @@ pub mod ntp {
             match stack.dns_query(POOL_NTP_ADDR, DnsQueryType::A).await {
                 Ok(mut addrs) => {
                     if let Some(addr) = addrs.pop() {
-                        let octets = match addr {
-                            embassy_net::IpAddress::Ipv4(ipv4) => *ipv4.as_octets(),
-                        };
-                        let ipv4_addr = no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
-                        let sock_addr = SocketAddr::new(no_std_net::IpAddr::V4(ipv4_addr), 123);
-                        log::info!("DNS resolved to: {:?}", sock_addr);
-                        return Ok(sock_addr);
+                        match addr {
+                            embassy_net::IpAddress::Ipv4(ipv4) => {
+                                let octets = *ipv4.as_octets();
+                                let ipv4_addr = no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+                                let sock_addr = SocketAddr::new(no_std_net::IpAddr::V4(ipv4_addr), 123);
+                                log::info!("DNS resolved to: {:?}", sock_addr);
+                                return Ok(sock_addr);
+                            }
+                            _ => {
+                                log::error!("DNS returned non-IPv4 address, skipping");
+                            }
+                        }
                     } else {
                         log::error!("DNS returned empty response");
                     }
