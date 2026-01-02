@@ -51,8 +51,8 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 panic-halt = "0.2.0"
 static_cell = { version = "2.1.0", features = ["nightly"] }
 portable-atomic = { version = "1.5", features = ["critical-section"] }
-heapless = { version = "0.8.0" }
-rust-mqtt = { version = "0.2.0", features = [
+heapless = { version = "0.9.1" }
+rust-mqtt = { version = "0.3.1", features = [
     "no_std",
 ], default-features = false }
 

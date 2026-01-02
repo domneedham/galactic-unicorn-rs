@@ -139,7 +139,7 @@ async fn main(spawner: Spawner) {
     log::info!("Joining wifi network...");
 
     let stack = network::create_and_join_network(
-        spawner, app_state, &settings, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
+        spawner, app_state, settings, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
     )
     .await;
 
@@ -158,13 +158,13 @@ async fn main(spawner: Spawner) {
 
     // mqtt clients
     spawner
-        .spawn(mqtt::clients::mqtt_send_client(stack, &settings))
+        .spawn(mqtt::clients::mqtt_send_client(stack, settings))
         .unwrap();
 
     spawner
         .spawn(mqtt::clients::mqtt_receive_client(
             stack,
-            &settings,
+            settings,
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
             MQTT_APP_CHANNEL.publisher().unwrap(),
             MQTT_SYSTEM_CHANNEL.publisher().unwrap(),
@@ -193,7 +193,7 @@ async fn main(spawner: Spawner) {
 
     spawner
         .spawn(mqtt::homeassistant::hass_discovery_task(
-            &settings,
+            settings,
             display,
             app_controller,
         ))

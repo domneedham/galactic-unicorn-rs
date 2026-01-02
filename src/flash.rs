@@ -70,7 +70,7 @@ pub async fn write_to_flash<T: FlashStorable<MAX_SIZE>, const MAX_SIZE: usize>(d
                     .await
             }
             embassy_rp::flash::Error::InvalidCore => {
-                DisplayTextMessage::from_app("Invalid corre", None, None, None)
+                DisplayTextMessage::from_app("Invalid core", None, None, None)
                     .send_and_replace_queue()
                     .await
             }

@@ -176,7 +176,12 @@ pub mod clients {
         },
         MqttMessage, MqttReceiveMessage, SEND_CHANNEL,
     };
-    use crate::settings::Settings;
+    use crate::{
+        config::{
+            MQTT_BROKER_A1, MQTT_BROKER_A2, MQTT_BROKER_A3, MQTT_BROKER_A4, MQTT_BROKER_PORT,
+        },
+        settings::Settings,
+    };
 
     /// Signal for when the send client has an error.
     pub static SEND_CLIENT_ERROR: Signal<ThreadModeRawMutex, bool> = Signal::new();
@@ -204,19 +209,16 @@ pub mod clients {
 
         let mut socket = TcpSocket::new(stack, socket_rx_buffer, socket_tx_buffer);
         socket.set_timeout(None);
-        // let host_addr = Ipv4Address::new(
-        //     MQTT_BROKER_A1,
-        //     MQTT_BROKER_A2,
-        //     MQTT_BROKER_A3,
-        //     MQTT_BROKER_A4,
-        // );
+        let host_addr = Ipv4Address::new(
+            MQTT_BROKER_A1,
+            MQTT_BROKER_A2,
+            MQTT_BROKER_A3,
+            MQTT_BROKER_A4,
+        );
 
-        let host_addr = Ipv4Address::from_str(&settings.mqtt_broker.as_ref().unwrap()).unwrap();
+        // let host_addr = Ipv4Address::from_str(&settings.mqtt_broker.as_ref().unwrap()).unwrap();
 
-        socket
-            .connect((host_addr, settings.mqtt_broker_port))
-            .await
-            .unwrap();
+        socket.connect((host_addr, MQTT_BROKER_PORT)).await.unwrap();
 
         log::info!(
             "MQTT {}: Connecting to broker at {:?}:{}",
@@ -251,10 +253,12 @@ pub mod clients {
         config.add_client_id(client_type.into());
 
         if let Some(username) = &settings.mqtt_username {
+            log::info!("MQTT {}: Using username", client_type);
             config.add_username(&username);
         }
 
         if let Some(password) = &settings.mqtt_password {
+            log::info!("MQTT {}: Using password", client_type);
             config.add_password(&password);
         }
 

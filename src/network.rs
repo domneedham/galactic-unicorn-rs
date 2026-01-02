@@ -2,7 +2,7 @@ use cyw43::JoinOptions;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_net::{tcp::TcpSocket, Ipv4Address, Ipv4Cidr, Stack, StackResources};
+use embassy_net::{Stack, StackResources};
 use embassy_rp::{
     bind_interrupts,
     gpio::{Level, Output},
@@ -10,7 +10,6 @@ use embassy_rp::{
     pio::{Common, InterruptHandler, Pio},
 };
 use embassy_time::{Duration, Timer};
-use heapless::Vec;
 use static_cell::StaticCell;
 
 use crate::{
@@ -94,7 +93,7 @@ pub async fn create_and_join_network(
         .await;
     log::info!("Network: WiFi chip initialized");
 
-    let mut config: Option<embassy_net::Config>;
+    let config: Option<embassy_net::Config>;
     if USE_DHCP {
         log::info!("Network: Configuring DHCP");
         config = Some(embassy_net::Config::dhcpv4(Default::default()));
@@ -139,13 +138,16 @@ pub async fn create_and_join_network(
     Timer::after(Duration::from_millis(100)).await;
     log::info!("Network: Stack initialized");
 
-    log::info!("Network: Joining WiFi network: {}", WIFI_NETWORK);
+    log::info!("Network: Joining WiFi network: {}", settings.wifi_network);
     let mut attempts = 0;
     loop {
         attempts += 1;
         log::info!("Network: Join attempt {}", attempts);
         match control
-            .join(WIFI_NETWORK, JoinOptions::new(WIFI_PASSWORD.as_bytes()))
+            .join(
+                &settings.wifi_network,
+                JoinOptions::new(settings.wifi_password.as_bytes()),
+            )
             .await
         {
             Ok(_) => {
@@ -214,7 +216,7 @@ pub mod access_point {
     };
     use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
     use embassy_time::{Duration, Timer};
-    use picoserve::routing::get;
+    use picoserve::AppBuilder;
     use static_cell::{make_static, StaticCell};
 
     use crate::{
@@ -313,58 +315,12 @@ pub mod access_point {
         // wait for a lease to be given before continuing
         LEASE_GIVEN.wait().await;
 
-        fn make_app() -> picoserve::Router<AppRouter> {
-            picoserve::Router::new()
-                .route(
-                    "/",
-                    get(async || picoserve::response::File::html(include_str!("./web/index.html")))
-                        .post(
-                            async |picoserve::extract::Form(crate::settings::Settings {
-                                       wifi_network,
-                                       wifi_password,
-                                       ip_address,
-                                       prefix_length,
-                                       gateway,
-                                       mqtt_broker,
-                                       mqtt_broker_port,
-                                       mqtt_username,
-                                       mqtt_password,
-                                       base_mqtt_topic,
-                                       device_id,
-                                       hass_base_mqtt_topic,
-                                       is_initialized,
-                                   })| {
-                                flash::write_to_flash(&Settings::new(
-                                    wifi_network,
-                                    wifi_password,
-                                    ip_address,
-                                    prefix_length,
-                                    gateway,
-                                    mqtt_broker,
-                                    mqtt_broker_port,
-                                    mqtt_username,
-                                    mqtt_password,
-                                    base_mqtt_topic,
-                                    device_id,
-                                    hass_base_mqtt_topic,
-                                    is_initialized,
-                                ))
-                                .await;
-                                picoserve::response::DebugValue("Done");
-                                SCB::sys_reset();
-                            },
-                        ),
-                )
-                .route(
-                    "/index.css",
-                    get(|| picoserve::response::File::css(include_str!("./web/index.css"))),
-                )
-        }
-
-        let app = make_static!(make_app());
+        static APP: StaticCell<picoserve::AppRouter<AppProps>> = StaticCell::new();
+        let app = APP.init(picoserve::AppRouter::<AppProps>::from(AppProps.build_app()));
 
         let config = make_static!(picoserve::Config::new(picoserve::Timeouts {
             start_read_request: Some(Duration::from_secs(5)),
+            persistent_start_read_request: Some(Duration::from_secs(1)),
             read_request: Some(Duration::from_secs(1)),
             write: Some(Duration::from_secs(1)),
         })
@@ -401,7 +357,7 @@ pub mod access_point {
             .unwrap();
 
         let ip = edge_dhcp::Ipv4Addr::new(192, 168, 1, 254);
-        let mut server = Server::<10>::new(ip);
+        let mut server = Server::<_, 10>::new(|| embassy_time::Instant::now().as_millis(), ip);
         server.range_start = Ipv4Addr::new(192, 168, 1, 50);
         server.range_end = Ipv4Addr::new(192, 168, 1, 200);
 
@@ -434,14 +390,70 @@ pub mod access_point {
 
     const WEB_TASK_POOL_SIZE: usize = 3;
 
-    type AppRouter = impl picoserve::routing::PathRouter;
+    struct AppProps;
+
+    impl picoserve::AppBuilder for AppProps {
+        type PathRouter = impl picoserve::routing::PathRouter;
+
+        fn build_app(self) -> picoserve::Router<Self::PathRouter> {
+            picoserve::Router::new()
+                .route(
+                    "/",
+                    picoserve::routing::get_service(picoserve::response::File::html(include_str!(
+                        "./web/index.html"
+                    )))
+                    .post(
+                        async |picoserve::extract::Form(crate::settings::Settings {
+                                   wifi_network,
+                                   wifi_password,
+                                   ip_address,
+                                   prefix_length,
+                                   gateway,
+                                   mqtt_broker,
+                                   mqtt_broker_port,
+                                   mqtt_username,
+                                   mqtt_password,
+                                   base_mqtt_topic,
+                                   device_id,
+                                   hass_base_mqtt_topic,
+                                   is_initialized,
+                               })|
+                               -> () {
+                            flash::write_to_flash(&Settings::new(
+                                wifi_network,
+                                wifi_password,
+                                ip_address,
+                                prefix_length,
+                                gateway,
+                                mqtt_broker,
+                                mqtt_broker_port,
+                                mqtt_username,
+                                mqtt_password,
+                                base_mqtt_topic,
+                                device_id,
+                                hass_base_mqtt_topic,
+                                is_initialized,
+                            ))
+                            .await;
+                            SCB::sys_reset();
+                        },
+                    ),
+                )
+                .route(
+                    "/index.css",
+                    picoserve::routing::get_service(picoserve::response::File::css(include_str!(
+                        "./web/index.css"
+                    ))),
+                )
+        }
+    }
 
     /// Start and run the web server.
     #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
     async fn picoserve_task(
-        stack: &'static embassy_net::Stack<'static>,
+        stack: embassy_net::Stack<'static>,
         id: usize,
-        app: &'static picoserve::Router<AppRouter>,
+        app: &'static picoserve::AppRouter<AppProps>,
         config: &'static picoserve::Config<Duration>,
     ) -> ! {
         let port = 80;
@@ -449,16 +461,10 @@ pub mod access_point {
         let mut tcp_tx_buffer = [0; 1024];
         let mut http_buffer = [0; 2048];
 
-        picoserve::listen_and_serve(
-            id,
-            app,
-            config,
-            stack,
-            port,
-            &mut tcp_rx_buffer,
-            &mut tcp_tx_buffer,
-            &mut http_buffer,
-        )
-        .await
+        loop {
+            let _ = picoserve::Server::new(app, config, &mut http_buffer)
+                .listen_and_serve(id, stack, port, &mut tcp_rx_buffer, &mut tcp_tx_buffer)
+                .await;
+        }
     }
 }

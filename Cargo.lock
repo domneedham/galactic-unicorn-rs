@@ -1046,7 +1046,7 @@ dependencies = [
  "embedded-graphics",
  "embedded-graphics-core",
  "galactic-unicorn-embassy",
- "heapless 0.8.0",
+ "heapless 0.9.2",
  "log",
  "micromath",
  "no-std-net",
@@ -1691,15 +1691,15 @@ dependencies = [
 
 [[package]]
 name = "rust-mqtt"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85c4b1fbe2ff726d3309ab119029b939ac8d5dd96a2aa8c82603dc15f3b8546f"
+checksum = "a9d4e054be48b0882a44a0f6c653685ff245404c99ea0d2f7a86b99b743a786a"
 dependencies = [
- "defmt 0.3.100",
+ "defmt 1.0.1",
  "embedded-io 0.6.1",
  "embedded-io-async 0.6.1",
- "heapless 0.8.0",
- "rand_core 0.6.4",
+ "heapless 0.9.2",
+ "rand_core 0.9.3",
 ]
 
 [[package]]
