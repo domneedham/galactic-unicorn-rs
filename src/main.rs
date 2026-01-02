@@ -22,11 +22,12 @@ mod time;
 
 use display::Display;
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{Input, Pull};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
 
 use defmt_rtt as _;
+use embassy_time::Duration;
+use embassy_time::Timer;
 use galactic_unicorn_embassy::pins::UnicornSensorPins;
 use panic_halt as _;
 
@@ -105,10 +106,16 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_b_task(button_pins.switch_b)).unwrap();
     spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
 
+    Timer::after(Duration::from_millis(2000)).await;
+
+    log::info!("Joining wifi network...");
+
     let stack = network::create_and_join_network(
         spawner, app_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
     )
     .await;
+
+    log::info!("Joined wifi network...");
 
     static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();

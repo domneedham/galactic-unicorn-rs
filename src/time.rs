@@ -15,7 +15,11 @@ impl Time {
     /// Must only be called once or will panic.
     pub fn new() -> &'static Self {
         make_static!(Self {
-            sys_start: Mutex::new(DateTime::UNIX_EPOCH.with_timezone(&GB)),
+            sys_start: Mutex::new(
+                DateTime::from_timestamp(0, 0)
+                    .expect("valid timestamp")
+                    .with_timezone(&GB)
+            ),
         })
     }
 
@@ -25,7 +29,7 @@ impl Time {
         let elapsed = Instant::now().as_millis();
         *sys_start = now
             .checked_sub_signed(Duration::milliseconds(elapsed as i64))
-            .expect("sys_start greater as current_ts");
+            .expect("sys_start calculation overflow");
     }
 
     /// Get the current time.
@@ -57,6 +61,9 @@ pub mod ntp {
     use super::Time;
 
     const POOL_NTP_ADDR: &str = "pool.ntp.org";
+    // Try local gateway first (often runs NTP), then Google's time server
+    const LOCAL_GATEWAY_IP: [u8; 4] = [192, 168, 1, 1];
+    const FALLBACK_NTP_IP: [u8; 4] = [216, 239, 35, 0];
 
     /// Signal for request to sync system with NTP.
     pub static SYNC_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
@@ -103,6 +110,7 @@ pub mod ntp {
             buf: &[u8],
             addr: T,
         ) -> sntpc::Result<usize> {
+            log::info!("NTP socket: sending {} bytes", buf.len());
             let mut addr_iter = addr
                 .to_socket_addrs()
                 .map_err(|_| SntpcError::ToSocketAddrs)?;
@@ -112,13 +120,18 @@ pub mod ntp {
                 .await
                 .map_err(|_| SntpcError::UdpSend)
                 .unwrap();
+            log::info!("NTP socket: sent successfully");
             Ok(buf.len())
         }
 
         /// Receive data from socket.
         async fn recv_from(&self, buf: &mut [u8]) -> sntpc::Result<(usize, SocketAddr)> {
+            log::info!("NTP socket: waiting for response...");
             match self.sock.recv_from(buf).await {
-                Ok((size, ip_endpoint)) => Ok((size, emb_endpoint_to_sock_addr(ip_endpoint))),
+                Ok((size, ip_endpoint)) => {
+                    log::info!("NTP socket: received {} bytes", size);
+                    Ok((size, emb_endpoint_to_sock_addr(ip_endpoint)))
+                }
                 Err(_) => panic!("not exp"),
             }
         }
@@ -192,9 +205,17 @@ pub mod ntp {
     #[embassy_executor::task]
     pub async fn ntp_worker(stack: Stack<'static>, time: &'static Time) {
         loop {
+            log::info!("NTP sync triggered");
+
             let sleep_sec = match ntp_request(stack, time).await {
-                Err(_) => 10,
-                Ok(_) => 3600,
+                Err(e) => {
+                    log::error!("NTP request failed: {:?}", e);
+                    10
+                }
+                Ok(_) => {
+                    log::info!("NTP sync successful");
+                    3600
+                }
             };
 
             select(Timer::after_secs(sleep_sec), SYNC_SIGNAL.wait()).await;
@@ -204,36 +225,158 @@ pub mod ntp {
 
     /// Create an NTP request and set the value in `Time`.
     async fn ntp_request(stack: Stack<'static>, time: &'static Time) -> Result<(), SntpcError> {
-        // let mut addrs = stack.dns_query(POOL_NTP_ADDR, DnsQueryType::A).await?;
-        // let addr = addrs.pop().ok_or(SntpcError::DnsEmptyResponse)?;
+        log::info!("Starting NTP request");
 
-        // let octets = addr.as_octets();
-        // let ipv4_addr = no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
-        // let sock_addr = SocketAddr::new(no_std_net::IpAddr::V4(ipv4_addr), 123);
+        // Wait for network stack to be ready
+        log::info!("Waiting for network stack to be ready...");
+        stack.wait_config_up().await;
+        log::info!("Network stack is ready");
 
-        // let mut rx_buffer = [0; 4096];
-        // let mut tx_buffer = [0; 4096];
-        // let mut rx_meta = [PacketMetadata::EMPTY; 16];
-        // let mut tx_meta = [PacketMetadata::EMPTY; 16];
+        // Try multiple NTP servers in order: DNS, local gateway, external
+        let servers_to_try = get_ntp_servers_to_try(stack).await;
 
-        // let mut socket = UdpSocket::new(
-        //     stack,
-        //     &mut rx_meta,
-        //     &mut rx_buffer,
-        //     &mut tx_meta,
-        //     &mut tx_buffer,
-        // );
-        // socket.bind(1234).unwrap();
+        for (i, sock_addr) in servers_to_try.iter().enumerate() {
+            log::info!("Trying NTP server {} of {}: {:?}", i + 1, servers_to_try.len(), sock_addr);
 
-        // let ntp_socket = NtpSocket { sock: socket };
-        // let ntp_context = NtpContext::new(TimestampGen::new(time).await);
+            match try_ntp_sync(stack, time, *sock_addr).await {
+                Ok(()) => {
+                    log::info!("NTP sync successful with server: {:?}", sock_addr);
+                    return Ok(());
+                }
+                Err(e) => {
+                    log::warn!("NTP sync failed with {:?}: {:?}", sock_addr, e);
+                    if i < servers_to_try.len() - 1 {
+                        log::info!("Trying next server...");
+                    }
+                }
+            }
+        }
 
-        // let ntp_result = get_time(sock_addr, ntp_socket, ntp_context).await?;
-        // let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0)
-        //     .ok_or(SntpcError::BadNtpResponse)?;
-        // let now = now.with_timezone(&GB);
-        // time.set_time(now).await;
+        log::error!("All NTP servers failed");
+        Err(SntpcError::Sntc(sntpc::Error::Network))
+    }
+
+    /// Get list of NTP servers to try in order
+    async fn get_ntp_servers_to_try(stack: Stack<'static>) -> heapless::Vec<SocketAddr, 3> {
+        let mut servers = heapless::Vec::new();
+
+        // Try DNS first
+        if let Ok(addr) = try_dns_query(stack).await {
+            log::info!("DNS resolved successfully");
+            let _ = servers.push(addr);
+        }
+
+        // Try local gateway
+        let gateway_addr = SocketAddr::new(
+            no_std_net::IpAddr::V4(no_std_net::Ipv4Addr::new(
+                LOCAL_GATEWAY_IP[0],
+                LOCAL_GATEWAY_IP[1],
+                LOCAL_GATEWAY_IP[2],
+                LOCAL_GATEWAY_IP[3],
+            )),
+            123
+        );
+        let _ = servers.push(gateway_addr);
+
+        // Try external Google NTP
+        let fallback_addr = SocketAddr::new(
+            no_std_net::IpAddr::V4(no_std_net::Ipv4Addr::new(
+                FALLBACK_NTP_IP[0],
+                FALLBACK_NTP_IP[1],
+                FALLBACK_NTP_IP[2],
+                FALLBACK_NTP_IP[3],
+            )),
+            123
+        );
+        let _ = servers.push(fallback_addr);
+
+        servers
+    }
+
+    /// Try to sync time with a specific NTP server
+    async fn try_ntp_sync(stack: Stack<'static>, time: &'static Time, sock_addr: SocketAddr) -> Result<(), SntpcError> {
+        log::info!("Connecting to NTP server: {:?}", sock_addr);
+
+        let mut rx_buffer = [0; 4096];
+        let mut tx_buffer = [0; 4096];
+        let mut rx_meta = [PacketMetadata::EMPTY; 16];
+        let mut tx_meta = [PacketMetadata::EMPTY; 16];
+
+        let mut socket = UdpSocket::new(
+            stack,
+            &mut rx_meta,
+            &mut rx_buffer,
+            &mut tx_meta,
+            &mut tx_buffer,
+        );
+        socket.bind(1234).unwrap();
+
+        log::info!("Socket bound, sending NTP request");
+
+        let ntp_socket = NtpSocket { sock: socket };
+        let ntp_context = NtpContext::new(TimestampGen::new(time).await);
+
+        // Add timeout to NTP request (10 seconds)
+        let ntp_result = embassy_futures::select::select(
+            get_time(sock_addr, ntp_socket, ntp_context),
+            Timer::after_secs(10)
+        ).await;
+
+        let ntp_result = match ntp_result {
+            embassy_futures::select::Either::First(result) => {
+                result.map_err(|e| {
+                    log::error!("NTP get_time failed: {:?}", e);
+                    e
+                })?
+            }
+            embassy_futures::select::Either::Second(_) => {
+                log::error!("NTP request timed out after 10 seconds");
+                return Err(SntpcError::Sntc(sntpc::Error::Network));
+            }
+        };
+
+        log::info!("NTP response received, timestamp: {}", ntp_result.seconds);
+
+        let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0)
+            .ok_or_else(|| {
+                log::error!("Failed to parse NTP timestamp: {}", ntp_result.seconds);
+                SntpcError::BadNtpResponse
+            })?;
+        let now = now.with_timezone(&GB);
+
+        log::info!("Setting time to: {:?}", now);
+        time.set_time(now).await;
 
         Ok(())
+    }
+
+    /// Try to resolve NTP server via DNS
+    async fn try_dns_query(stack: Stack<'static>) -> Result<SocketAddr, SntpcError> {
+        // Retry DNS query a few times since it might fail initially
+        for attempt in 1..=3 {
+            log::info!("DNS query attempt {} of 3 for {}", attempt, POOL_NTP_ADDR);
+            match stack.dns_query(POOL_NTP_ADDR, DnsQueryType::A).await {
+                Ok(mut addrs) => {
+                    if let Some(addr) = addrs.pop() {
+                        let octets = match addr {
+                            embassy_net::IpAddress::Ipv4(ipv4) => *ipv4.as_octets(),
+                        };
+                        let ipv4_addr = no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+                        let sock_addr = SocketAddr::new(no_std_net::IpAddr::V4(ipv4_addr), 123);
+                        log::info!("DNS resolved to: {:?}", sock_addr);
+                        return Ok(sock_addr);
+                    } else {
+                        log::error!("DNS returned empty response");
+                    }
+                }
+                Err(e) => {
+                    log::error!("DNS query attempt {} failed: {:?}", attempt, e);
+                    if attempt < 3 {
+                        Timer::after_secs(2).await;
+                    }
+                }
+            }
+        }
+        Err(SntpcError::DnsEmptyResponse)
     }
 }

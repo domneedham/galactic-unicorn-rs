@@ -989,6 +989,7 @@ dependencies = [
  "embedded-graphics-core",
  "galactic-unicorn-embassy",
  "heapless",
+ "log",
  "micromath",
  "no-std-net",
  "panic-halt",

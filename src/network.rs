@@ -56,8 +56,10 @@ pub async fn create_and_join_network(
     pio_1: embassy_rp::Peri<'static, PIO1>,
     dma_ch1: embassy_rp::Peri<'static, DMA_CH1>,
 ) -> Stack<'static> {
+    log::info!("Network: Starting network initialization");
     let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
     let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
+    log::info!("Network: Firmware loaded");
 
     // wifi
     let pwr = Output::new(pin_23, Level::Low);
@@ -79,23 +81,32 @@ pub async fn create_and_join_network(
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
     spawner.spawn(wifi_task(runner)).unwrap();
 
+    log::info!("Network: Initializing WiFi chip");
     control.init(clm).await;
     control
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
+    log::info!("Network: WiFi chip initialized");
 
     let mut addresses: Vec<Ipv4Address, 3> = Vec::new();
-    addresses.insert(0, Ipv4Address::new(1, 1, 1, 1)).unwrap();
+    addresses.insert(0, Ipv4Address::new(8, 8, 8, 8)).unwrap(); // Google DNS
+
+    let static_ip = Ipv4Address::new(IP_A1, IP_A2, IP_A3, IP_A4);
+    let gateway_ip = Ipv4Address::new(GW_A1, GW_A2, GW_A3, GW_A4);
+
+    log::info!("Network: Configuring static IP: {:?}", static_ip);
+    log::info!("Network: Gateway: {:?}", gateway_ip);
+    log::info!("Network: DNS: 8.8.8.8");
+
     let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-        address: Ipv4Cidr::new(Ipv4Address::new(IP_A1, IP_A2, IP_A3, IP_A4), PREFIX_LENGTH),
+        address: Ipv4Cidr::new(static_ip, PREFIX_LENGTH),
         dns_servers: addresses,
-        gateway: Some(Ipv4Address::new(GW_A1, GW_A2, GW_A3, GW_A4)),
+        gateway: Some(gateway_ip),
     });
     // Generate random seed
-    let seed = 0x0123_4567_89ab_cdef; // chosen by fair dice roll. guarenteed to be random.
+    let seed = 0x0123_4567_89ab_cdef; // chosen by fair dice roll. guaranteed to be random.
 
     // Init network stack
-    static STACK: StaticCell<Stack<'static>> = StaticCell::new();
     static RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(
         net_device,
@@ -105,20 +116,40 @@ pub async fn create_and_join_network(
     );
 
     spawner.spawn(net_task(runner)).unwrap();
+    log::info!("Network: Stack initialized");
 
+    log::info!("Network: Joining WiFi network: {}", WIFI_NETWORK);
+    let mut attempts = 0;
     loop {
+        attempts += 1;
+        log::info!("Network: Join attempt {}", attempts);
         match control
             .join(WIFI_NETWORK, JoinOptions::new(WIFI_PASSWORD.as_bytes()))
             .await
         {
-            Ok(_) => break,
-            Err(_) => {
+            Ok(_) => {
+                log::info!("Network: Successfully joined WiFi network");
+                break;
+            }
+            Err(e) => {
+                log::error!("Network: Join attempt {} failed: {:?}", attempts, e);
                 Timer::after(Duration::from_secs(2)).await;
             }
         }
     }
 
+    log::info!("Network: Waiting for link to be up...");
+    stack.wait_link_up().await;
+    log::info!("Network: Link is up");
+
+    log::info!("Network: Waiting for config to be ready...");
+    stack.wait_config_up().await;
+    log::info!("Network: Config is ready");
+
+    log::info!("Network: IP address: {:?}", stack.config_v4());
+
     app_state.set_network_state(NetworkState::Connected).await;
+    log::info!("Network: Initialization complete");
 
     spawner.spawn(monitor_network_task(app_state)).unwrap();
 
