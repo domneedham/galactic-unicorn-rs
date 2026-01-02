@@ -3,7 +3,8 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
-#![feature(async_closure)]
+#![feature(impl_trait_in_assoc_type)]
+#![feature(ip_as_octets)]
 
 mod app;
 mod buttons;
@@ -25,9 +26,13 @@ use defmt_rtt as _;
 use panic_halt as _;
 
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{Input, Pull};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
+
+use defmt_rtt as _;
+use embassy_time::Duration;
+use embassy_time::Timer;
+use panic_halt as _;
 
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
@@ -64,18 +69,26 @@ async fn main(spawner: Spawner) {
     };
 
     let button_pins = UnicornButtonPins {
-        switch_a: Input::new(p.PIN_0, Pull::Up),
-        switch_b: Input::new(p.PIN_1, Pull::Up),
-        switch_c: Input::new(p.PIN_3, Pull::Up),
-        switch_d: Input::new(p.PIN_6, Pull::Up),
-        brightness_up: Input::new(p.PIN_21, Pull::Up),
-        brightness_down: Input::new(p.PIN_26, Pull::Up),
-        volume_up: Input::new(p.PIN_7, Pull::Up),
-        volume_down: Input::new(p.PIN_8, Pull::Up),
-        sleep: Input::new(p.PIN_27, Pull::Up),
+        switch_a: p.PIN_0,
+        switch_b: p.PIN_1,
+        switch_c: p.PIN_3,
+        switch_d: p.PIN_6,
+        brightness_up: p.PIN_21,
+        brightness_down: p.PIN_26,
+        volume_up: p.PIN_7,
+        volume_down: p.PIN_8,
+        sleep: p.PIN_27,
     };
 
-    let display = Display::new(p.PIO0, p.DMA_CH0, p.ADC, display_pins, sensor_pins, spawner);
+    let display = Display::new(
+        p.PIO0,
+        p.DMA_CH0,
+        p.ADC,
+        p.USB,
+        display_pins,
+        sensor_pins,
+        spawner,
+    );
 
     spawner
         .spawn(brightness_up_task(button_pins.brightness_up))
@@ -121,10 +134,16 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_b_task(button_pins.switch_b)).unwrap();
     spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
 
+    Timer::after(Duration::from_millis(2000)).await;
+
+    log::info!("Joining wifi network...");
+
     let stack = network::create_and_join_network(
         spawner, app_state, &settings, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
     )
     .await;
+
+    log::info!("Joined wifi network...");
 
     static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
@@ -139,13 +158,13 @@ async fn main(spawner: Spawner) {
 
     // mqtt clients
     spawner
-        .spawn(mqtt::clients::mqtt_send_client(stack, settings))
+        .spawn(mqtt::clients::mqtt_send_client(stack, &settings))
         .unwrap();
 
     spawner
         .spawn(mqtt::clients::mqtt_receive_client(
             stack,
-            settings,
+            &settings,
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
             MQTT_APP_CHANNEL.publisher().unwrap(),
             MQTT_SYSTEM_CHANNEL.publisher().unwrap(),
@@ -174,7 +193,7 @@ async fn main(spawner: Spawner) {
 
     spawner
         .spawn(mqtt::homeassistant::hass_discovery_task(
-            settings,
+            &settings,
             display,
             app_controller,
         ))

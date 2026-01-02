@@ -192,7 +192,7 @@ pub mod clients {
 
     /// Create an MQTT client and connect it to the broker.
     async fn create_client<'a>(
-        stack: &'static Stack<cyw43::NetDriver<'static>>,
+        stack: Stack<'static>,
         settings: &'static Settings,
         client_type: &'a str,
         socket_rx_buffer: &'a mut [u8],
@@ -200,6 +200,8 @@ pub mod clients {
         client_rx_buffer: &'a mut [u8],
         client_tx_buffer: &'a mut [u8],
     ) -> MqttClient<'a, TcpSocket<'a>, 5, CountingRng> {
+        log::info!("MQTT {}: Creating client", client_type);
+
         let mut socket = TcpSocket::new(stack, socket_rx_buffer, socket_tx_buffer);
         socket.set_timeout(None);
         // let host_addr = Ipv4Address::new(
@@ -215,6 +217,33 @@ pub mod clients {
             .connect((host_addr, settings.mqtt_broker_port))
             .await
             .unwrap();
+
+        log::info!(
+            "MQTT {}: Connecting to broker at {:?}:{}",
+            client_type,
+            host_addr,
+            settings.mqtt_broker_port
+        );
+        match socket.connect((host_addr, settings.mqtt_broker_port)).await {
+            Ok(_) => log::info!("MQTT {}: TCP connection established", client_type),
+            Err(e) => {
+                log::error!("MQTT {}: TCP connection failed: {:?}", client_type, e);
+                // Loop forever with retries - this prevents panic but allows debugging
+                loop {
+                    log::error!("MQTT {}: Retrying connection in 5 seconds...", client_type);
+                    Timer::after_secs(5).await;
+                    match socket.connect((host_addr, settings.mqtt_broker_port)).await {
+                        Ok(_) => {
+                            log::info!("MQTT {}: TCP connection established on retry", client_type);
+                            break;
+                        }
+                        Err(e) => {
+                            log::error!("MQTT {}: Retry failed: {:?}", client_type, e);
+                        }
+                    }
+                }
+            }
+        }
 
         let mut config = ClientConfig::new(MqttVersion::MQTTv5, CountingRng(20000));
         config.max_packet_size = 100;
@@ -238,17 +267,18 @@ pub mod clients {
             config,
         );
 
+        log::info!("MQTT {}: Connecting to MQTT broker", client_type);
         client.connect_to_broker().await.unwrap();
+        log::info!("MQTT {}: Successfully connected to broker", client_type);
 
         client
     }
 
     /// Send client for MQTT messages. Polls the `SEND_CHANNEL` to know when to send a message.
     #[embassy_executor::task]
-    pub async fn mqtt_send_client(
-        stack: &'static Stack<cyw43::NetDriver<'static>>,
-        settings: &'static Settings,
-    ) {
+    pub async fn mqtt_send_client(stack: Stack<'static>, settings: &'static Settings) {
+        log::info!("MQTT send client: Starting");
+
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
         let socket_tx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
         let client_rx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
@@ -269,12 +299,21 @@ pub mod clients {
         )
         .await;
 
+        log::info!("MQTT send client: Ready to send messages");
         let mut was_previous_error = false;
+        let mut message_count = 0u32;
 
         loop {
             let result: Result<(), ReasonCode> =
                 match select(SEND_CHANNEL.receive(), Timer::after_secs(5)).await {
                     Either::First(message) => {
+                        message_count += 1;
+                        log::info!(
+                            "MQTT send client: Sending message #{} to topic: {}",
+                            message_count,
+                            message.topic
+                        );
+
                         let result = client
                             .send_message(
                                 &message.topic,
@@ -285,20 +324,45 @@ pub mod clients {
                             .await;
 
                         drop(message);
+
+                        match &result {
+                            Ok(_) => log::info!(
+                                "MQTT send client: Message #{} sent successfully",
+                                message_count
+                            ),
+                            Err(e) => log::error!(
+                                "MQTT send client: Failed to send message #{}: {:?}",
+                                message_count,
+                                get_reason_code(e)
+                            ),
+                        }
+
                         result
                     }
-                    Either::Second(_) => client.send_ping().await,
+                    Either::Second(_) => {
+                        log::debug!("MQTT send client: Sending keepalive ping");
+                        let result = client.send_ping().await;
+                        if result.is_err() {
+                            log::error!("MQTT send client: Ping failed");
+                        }
+                        result
+                    }
                 };
 
             match result {
                 Ok(_) => {
                     if was_previous_error {
+                        log::info!("MQTT send client: Connection recovered");
                         SEND_CLIENT_ERROR.signal(false);
                         was_previous_error = false;
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     if !was_previous_error {
+                        log::error!(
+                            "MQTT send client: Connection error: {:?}",
+                            get_reason_code(&e)
+                        );
                         SEND_CLIENT_ERROR.signal(true);
                         was_previous_error = true;
                     }
@@ -310,12 +374,14 @@ pub mod clients {
     /// Receive client for MQTT messages. Publishes into the relevent publisher.
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
-        stack: &'static Stack<cyw43::NetDriver<'static>>,
+        stack: Stack<'static>,
         settings: &'static Settings,
         display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
+        log::info!("MQTT receive client: Starting");
+
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
         let socket_tx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
         let client_rx_buffer = singleton!(: [u8; CLIENT_BUF_SIZE] = [0; CLIENT_BUF_SIZE]).unwrap();
@@ -349,46 +415,92 @@ pub mod clients {
         ])
         .unwrap();
 
-        match client.subscribe_to_topics(&topics).await {
-            Ok(_) => MqttMessage::enqueue_debug("Subscribed to topics").await,
-            Err(code) => send_reason_code(code).await,
+        log::info!(
+            "MQTT receive client: Subscribing to {} topics",
+            topics.len()
+        );
+        match client.subscribe_to_topics::<8>(&topics).await {
+            Ok(_) => {
+                log::info!("MQTT receive client: Successfully subscribed to all topics");
+                MqttMessage::enqueue_debug("Subscribed to topics").await
+            }
+            Err(code) => {
+                log::error!(
+                    "MQTT receive client: Failed to subscribe: {:?}",
+                    get_reason_code(&code)
+                );
+                send_reason_code(code).await
+            }
         };
 
+        log::info!("MQTT receive client: Ready to receive messages");
         let mut was_previous_error = false;
+        let mut message_count = 0u32;
 
         loop {
             let result: Result<(), ReasonCode> =
                 match select(client.receive_message(), Timer::after_secs(5)).await {
                     Either::First(received_message) => match received_message {
                         Ok(mqtt_message) => {
+                            message_count += 1;
+                            log::info!(
+                                "MQTT receive client: Received message #{} on topic: {}",
+                                message_count,
+                                mqtt_message.0
+                            );
+
                             let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
 
                             if mqtt_message.0.contains("display") {
+                                log::debug!("MQTT receive client: Publishing to display channel");
                                 display_publisher.publish(message).await;
                             } else if mqtt_message.0.contains("app") {
+                                log::debug!("MQTT receive client: Publishing to app channel");
                                 app_publisher.publish(message).await;
                             } else if mqtt_message.0.contains("system") {
+                                log::debug!("MQTT receive client: Publishing to system channel");
                                 system_publisher.publish(message).await;
                             } else if mqtt_message.0.contains(&*settings.hass_base_mqtt_topic) {
+                                log::debug!(
+                                    "MQTT receive client: Publishing to home assistant channel"
+                                );
                                 homeassistant::HASS_RECIEVE_CHANNEL.send(message).await;
                             }
 
                             Ok(())
                         }
-                        Err(code) => Err(code),
+                        Err(code) => {
+                            log::error!(
+                                "MQTT receive client: Error receiving message: {:?}",
+                                get_reason_code(&code)
+                            );
+                            Err(code)
+                        }
                     },
-                    Either::Second(_) => client.send_ping().await,
+                    Either::Second(_) => {
+                        log::debug!("MQTT receive client: Sending keepalive ping");
+                        let result = client.send_ping().await;
+                        if result.is_err() {
+                            log::error!("MQTT receive client: Ping failed");
+                        }
+                        result
+                    }
                 };
 
             match result {
                 Ok(_) => {
                     if was_previous_error {
+                        log::info!("MQTT receive client: Connection recovered");
                         RECEIVE_CLIENT_ERROR.signal(false);
                         was_previous_error = false;
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     if !was_previous_error {
+                        log::error!(
+                            "MQTT receive client: Connection error: {:?}",
+                            get_reason_code(&e)
+                        );
                         RECEIVE_CLIENT_ERROR.signal(true);
                         was_previous_error = true;
                     }
@@ -398,7 +510,7 @@ pub mod clients {
     }
 
     /// Turn the `ReasonCode` into a &str.
-    fn get_reason_code(code: ReasonCode) -> &'static str {
+    fn get_reason_code(code: &ReasonCode) -> &'static str {
         match code {
             ReasonCode::Success => "Success",
             ReasonCode::GrantedQoS1 => "GrantedQoS1",
@@ -453,7 +565,7 @@ pub mod clients {
 
     /// Send the `ReasonCode` as a debug message.
     async fn send_reason_code(code: ReasonCode) {
-        let message = get_reason_code(code);
+        let message = get_reason_code(&code);
         MqttMessage::enqueue_debug(message).await;
     }
 }
