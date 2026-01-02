@@ -133,6 +133,8 @@ impl AppController {
 
     /// The main program loop.
     pub async fn run_forever(&'static self) -> ! {
+        log::info!("App controller started");
+
         loop {
             let (app, press): (Apps, ButtonPress) = match select3(
                 SWITCH_A_PRESS.wait(),
@@ -236,17 +238,25 @@ async fn process_state_change_task(app_controller: &'static AppController) {
     loop {
         let state_update = STATE_CHANGED.wait().await;
 
+        log::info!("State changed");
         MqttMessage::enqueue_debug("State changed").await;
 
         match state_update {
             StateUpdates::Network => {
                 match app_controller.system_state.get_network_state().await {
-                    NetworkState::NotInitialised => {}
+                    NetworkState::NotInitialised => {
+                        log::info!("Network state not initialised");
+                    }
                     NetworkState::Connected => {
+                        log::info!("Network state connected");
+
                         let previous_app = *app_controller.previous_app.lock().await;
                         app_controller.change_app(previous_app).await;
                     }
-                    NetworkState::Error => app_controller.change_app(Apps::System).await,
+                    NetworkState::Error => {
+                        log::info!("Switching to system app due to network error");
+                        app_controller.change_app(Apps::System).await;
+                    }
                 };
             }
         }

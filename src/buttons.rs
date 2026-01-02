@@ -2,6 +2,7 @@ use embassy_futures::select::{select, Either};
 use embassy_rp::{
     gpio::Input,
     peripherals::{PIN_0, PIN_1, PIN_21, PIN_26, PIN_3},
+    Peri,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
 use embassy_time::{Duration, Timer};
@@ -41,7 +42,8 @@ pub static SWITCH_C_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn brightness_up_task(mut button: Input<'static, PIN_21>) -> ! {
+pub async fn brightness_up_task(button_peri: Peri<'static, PIN_21>) -> ! {
+    let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
@@ -66,7 +68,8 @@ pub async fn brightness_up_task(mut button: Input<'static, PIN_21>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn brightness_down_task(mut button: Input<'static, PIN_26>) -> ! {
+pub async fn brightness_down_task(button_peri: Peri<'static, PIN_26>) -> ! {
+    let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
@@ -91,7 +94,8 @@ pub async fn brightness_down_task(mut button: Input<'static, PIN_26>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn button_a_task(mut button: Input<'static, PIN_0>) -> ! {
+pub async fn button_a_task(button_peri: Peri<'static, PIN_0>) -> ! {
+    let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
@@ -116,7 +120,8 @@ pub async fn button_a_task(mut button: Input<'static, PIN_0>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn button_b_task(mut button: Input<'static, PIN_1>) -> ! {
+pub async fn button_b_task(button_peri: Peri<'static, PIN_1>) -> ! {
+    let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
@@ -141,7 +146,8 @@ pub async fn button_b_task(mut button: Input<'static, PIN_1>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn button_c_task(mut button: Input<'static, PIN_3>) -> ! {
+pub async fn button_c_task(button_peri: Peri<'static, PIN_3>) -> ! {
+    let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
@@ -161,10 +167,7 @@ pub async fn button_c_task(mut button: Input<'static, PIN_3>) -> ! {
 
 /// Determine the type of press performed on the button.
 #[allow(clippy::needless_pass_by_ref_mut)] // needs to be mutable to use wait_for_*()
-async fn button_pressed<T>(button: &mut Input<'_, T>) -> ButtonPress
-where
-    T: embassy_rp::gpio::Pin,
-{
+async fn button_pressed(button: &mut Input<'_>) -> ButtonPress {
     // wait until button is released or 500ms (long press)
     let res = select(
         button.wait_for_high(),
