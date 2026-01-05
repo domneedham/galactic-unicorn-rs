@@ -70,6 +70,7 @@ impl DrawApp {
 
     fn start_tcp_server(&'static self) {
         if self.server_active.load(Ordering::Relaxed) {
+            log::info!("TCP server already active, skipping spawn");
             return;
         }
 
@@ -77,7 +78,9 @@ impl DrawApp {
         self.server_active.store(true, Ordering::Relaxed);
 
         // Spawn a task that waits for network and starts the server
+        log::info!("About to spawn start_tcp_server_task");
         self.spawner.spawn(start_tcp_server_task(self)).unwrap();
+        log::info!("Successfully spawned start_tcp_server_task");
     }
 
     async fn stop_tcp_server(&self) {
@@ -215,9 +218,11 @@ impl AppCapabilities for DrawApp {
 async fn start_tcp_server_task(app: &'static DrawApp) {
     log::info!("TCP server: Waiting for network...");
     let stack = get_network_stack().await;
-    log::info!("TCP server: Starting");
+    log::info!("TCP server: Got network stack");
 
+    log::info!("TCP server: Spawning tcp_server_task");
     app.spawner.spawn(tcp_server_task(app, stack)).unwrap();
+    log::info!("TCP server: tcp_server_task spawned successfully");
 }
 
 #[embassy_executor::task]

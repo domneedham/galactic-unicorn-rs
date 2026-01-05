@@ -269,6 +269,7 @@ pub mod clients {
     pub async fn mqtt_send_client(_app_state: &'static crate::system::SystemState) {
         log::info!("MQTT send client: Waiting for network...");
         let stack = crate::network::get_network_stack().await;
+        log::info!("MQTT send client: Got network stack");
         log::info!("MQTT send client: Starting");
 
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
@@ -368,6 +369,7 @@ pub mod clients {
     ) {
         log::info!("MQTT receive client: Waiting for network...");
         let stack = crate::network::get_network_stack().await;
+        log::info!("MQTT receive client: Got network stack");
         log::info!("MQTT receive client: Starting");
 
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();

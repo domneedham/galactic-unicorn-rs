@@ -218,6 +218,7 @@ pub mod ntp {
     ) {
         log::info!("NTP worker: Waiting for network...");
         let stack = crate::network::get_network_stack().await;
+        log::info!("NTP worker: Got network stack");
         log::info!("NTP worker: Starting");
         loop {
             log::info!("NTP sync triggered");

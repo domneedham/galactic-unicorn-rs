@@ -9,6 +9,7 @@ use embassy_rp::{
     peripherals::{DMA_CH1, PIN_23, PIN_24, PIN_25, PIN_29, PIO1},
     pio::{Common, InterruptHandler, Pio},
 };
+use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex},
     mutex::Mutex,
@@ -35,27 +36,54 @@ pub enum NetworkState {
 /// Mutex-protected Option for storing the network stack once ready.
 /// Stack is Copy, so we can clone it out. We use Mutex with CriticalSectionRawMutex
 /// to allow safe concurrent access from different tasks.
+/// Using ConstStaticCell so we can use get() safely.
 static NETWORK_STACK: StaticCell<Mutex<CriticalSectionRawMutex, Option<Stack<'static>>>> =
     StaticCell::new();
+
+/// Store the initialized reference after init
+static mut NETWORK_STACK_REF: Option<&'static Mutex<CriticalSectionRawMutex, Option<Stack<'static>>>> = None;
+
+/// Atomic flag to track if the network stack has been initialized.
+static NETWORK_STACK_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Signal that fires when network stack is ready.
 static NETWORK_STACK_READY: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
-/// Initialize the network stack storage on first access.
-/// Safe to call multiple times - returns the same storage reference.
-fn init_network_stack_storage() -> &'static Mutex<CriticalSectionRawMutex, Option<Stack<'static>>> {
-    NETWORK_STACK.init_with(|| Mutex::new(None))
-}
-
 /// Get the network stack (blocks until ready). Returns a copy of the Stack (Stack is Copy).
 pub async fn get_network_stack() -> Stack<'static> {
-    // Wait for stack to be ready
-    NETWORK_STACK_READY.wait().await;
+    log::info!("get_network_stack: Called, checking if initialized...");
+    Timer::after(Duration::from_millis(10)).await;
 
-    // Now retrieve it from storage
-    let stack_mutex = init_network_stack_storage();
-    let stack_opt = stack_mutex.lock().await;
-    stack_opt.expect("Network stack should be available after signal")
+    // Poll until StaticCell is initialized
+    loop {
+        // Check if initialized using atomic flag
+        if NETWORK_STACK_INITIALIZED.load(Ordering::Acquire) {
+            log::info!("get_network_stack: Stack is initialized, acquiring mutex...");
+            Timer::after(Duration::from_millis(10)).await;
+
+            // SAFETY: We checked the atomic flag, so we know NETWORK_STACK_REF has been set
+            let stack_mutex = unsafe {
+                NETWORK_STACK_REF.expect("NETWORK_STACK_REF should be set after initialization")
+            };
+
+            log::info!("get_network_stack: Got mutex reference, locking...");
+            Timer::after(Duration::from_millis(10)).await;
+
+            let stack_opt = stack_mutex.lock().await;
+
+            log::info!("get_network_stack: Mutex locked, extracting stack...");
+            Timer::after(Duration::from_millis(10)).await;
+
+            let stack = stack_opt.expect("Network stack should be Some after initialization");
+
+            log::info!("get_network_stack: Stack extracted successfully, returning");
+            Timer::after(Duration::from_millis(10)).await;
+
+            return stack;
+        }
+        // Small delay before checking again
+        Timer::after(Duration::from_millis(10)).await;
+    }
 }
 
 /// Helper to check if network is currently connected.
@@ -105,14 +133,21 @@ pub async fn network_init_task(
     .await;
 
     // Store the stack in the global mutex (Stack is Copy)
-    let stack_mutex = init_network_stack_storage();
-    let mut stack_opt = stack_mutex.lock().await;
-    *stack_opt = Some(stack);
-    drop(stack_opt);
+    // Initialize StaticCell once, then store the stack value
+    let stack_ref = NETWORK_STACK.init(Mutex::new(Some(stack)));
+
+    // Store the reference in the static mut
+    unsafe {
+        NETWORK_STACK_REF = Some(stack_ref);
+    }
+
+    // Set the atomic flag to indicate initialization is complete
+    NETWORK_STACK_INITIALIZED.store(true, Ordering::Release);
 
     // Signal that stack is ready
     NETWORK_STACK_READY.signal(());
     log::info!("Network stack stored and ready");
+    Timer::after(Duration::from_millis(50)).await;
 }
 
 /// Create and join the wifi network. Will wait until it has successfully joined.

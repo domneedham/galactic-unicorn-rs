@@ -307,7 +307,9 @@ async fn process_state_change_task(app_controller: &'static AppController) {
 
                         // Call lifecycle hooks for current app
                         if current_app == Apps::Draw {
+                            log::info!("Calling draw_app.on_network_ready()");
                             app_controller.draw_app.on_network_ready().await;
+                            log::info!("Returned from draw_app.on_network_ready()");
                         }
 
                         // If on System app, return to previous app
