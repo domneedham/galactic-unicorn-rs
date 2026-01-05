@@ -2,15 +2,19 @@ use cyw43::JoinOptions;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_net::{tcp::TcpSocket, Ipv4Address, Ipv4Cidr, Stack, StackResources};
+use embassy_net::{Stack, StackResources};
 use embassy_rp::{
     bind_interrupts,
     gpio::{Level, Output},
     peripherals::{DMA_CH1, PIN_23, PIN_24, PIN_25, PIN_29, PIO1},
     pio::{Common, InterruptHandler, Pio},
 };
+use embassy_sync::{
+    blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex},
+    mutex::Mutex,
+    signal::Signal,
+};
 use embassy_time::{Duration, Timer};
-use heapless::Vec;
 use static_cell::StaticCell;
 
 use crate::{
@@ -20,11 +24,46 @@ use crate::{
 };
 
 /// Network states.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NetworkState {
     NotInitialised,
+    Initializing,
     Connected,
     Error,
+}
+
+/// Mutex-protected Option for storing the network stack once ready.
+/// Stack is Copy, so we can clone it out. We use Mutex with CriticalSectionRawMutex
+/// to allow safe concurrent access from different tasks.
+static NETWORK_STACK: StaticCell<Mutex<CriticalSectionRawMutex, Option<Stack<'static>>>> =
+    StaticCell::new();
+
+/// Signal that fires when network stack is ready.
+static NETWORK_STACK_READY: Signal<ThreadModeRawMutex, ()> = Signal::new();
+
+/// Initialize the network stack storage on first access.
+/// Safe to call multiple times - returns the same storage reference.
+fn init_network_stack_storage() -> &'static Mutex<CriticalSectionRawMutex, Option<Stack<'static>>> {
+    NETWORK_STACK.init_with(|| Mutex::new(None))
+}
+
+/// Get the network stack (blocks until ready). Returns a copy of the Stack (Stack is Copy).
+pub async fn get_network_stack() -> Stack<'static> {
+    // Wait for stack to be ready
+    NETWORK_STACK_READY.wait().await;
+
+    // Now retrieve it from storage
+    let stack_mutex = init_network_stack_storage();
+    let stack_opt = stack_mutex.lock().await;
+    stack_opt.expect("Network stack should be available after signal")
+}
+
+/// Helper to check if network is currently connected.
+pub async fn is_network_ready(system_state: &'static SystemState) -> bool {
+    matches!(
+        system_state.get_network_state().await,
+        NetworkState::Connected
+    )
 }
 
 bind_interrupts!(struct Irqs {
@@ -43,6 +82,37 @@ async fn wifi_task(
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
     runner.run().await
+}
+
+/// Background task that initializes network without blocking main initialization.
+#[embassy_executor::task]
+pub async fn network_init_task(
+    app_state: &'static SystemState,
+    pin_23: embassy_rp::Peri<'static, PIN_23>,
+    pin_24: embassy_rp::Peri<'static, PIN_24>,
+    pin_25: embassy_rp::Peri<'static, PIN_25>,
+    pin_29: embassy_rp::Peri<'static, PIN_29>,
+    pio_1: embassy_rp::Peri<'static, PIO1>,
+    dma_ch1: embassy_rp::Peri<'static, DMA_CH1>,
+    spawner: Spawner,
+) {
+    log::info!("Network init task started (background)");
+    app_state.set_network_state(NetworkState::Initializing).await;
+
+    let stack = create_and_join_network(
+        spawner, app_state, pin_23, pin_24, pin_25, pin_29, pio_1, dma_ch1,
+    )
+    .await;
+
+    // Store the stack in the global mutex (Stack is Copy)
+    let stack_mutex = init_network_stack_storage();
+    let mut stack_opt = stack_mutex.lock().await;
+    *stack_opt = Some(stack);
+    drop(stack_opt);
+
+    // Signal that stack is ready
+    NETWORK_STACK_READY.signal(());
+    log::info!("Network stack stored and ready");
 }
 
 /// Create and join the wifi network. Will wait until it has successfully joined.
@@ -92,14 +162,13 @@ pub async fn create_and_join_network(
         .await;
     log::info!("Network: WiFi chip initialized");
 
-    let mut config: Option<embassy_net::Config>;
-    if USE_DHCP {
+    let config = if USE_DHCP {
         log::info!("Network: Configuring DHCP");
-        config = Some(embassy_net::Config::dhcpv4(Default::default()));
+        embassy_net::Config::dhcpv4(Default::default())
     } else {
         log::info!("Network: Configuring static IP is not currently supported");
         log::info!("Network: Configuring DHCP");
-        config = Some(embassy_net::Config::dhcpv4(Default::default()));
+        embassy_net::Config::dhcpv4(Default::default())
 
         // let mut addresses: Vec<Ipv4Address, 3> = Vec::new();
         // addresses.insert(0, Ipv4Address::new(8, 8, 8, 8)).unwrap(); // Google DNS
@@ -111,14 +180,14 @@ pub async fn create_and_join_network(
         // log::info!("Network: Gateway: {:?}", gateway_ip);
         // log::info!("Network: DNS: 8.8.8.8");
 
-        // config = Some(embassy_net::Config::ipv4_static(
+        // embassy_net::Config::ipv4_static(
         //     embassy_net::StaticConfigV4 {
         //         address: Ipv4Cidr::new(static_ip, PREFIX_LENGTH),
         //         dns_servers: addresses,
         //         gateway: Some(gateway_ip),
         //     },
-        // ));
-    }
+        // )
+    };
 
     // Generate random seed
     let seed = 0x0123_4567_89ab_cdef; // chosen by fair dice roll. guaranteed to be random.
@@ -127,7 +196,7 @@ pub async fn create_and_join_network(
     static RESOURCES: StaticCell<StackResources<13>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(
         net_device,
-        config.unwrap(),
+        config,
         RESOURCES.init(StackResources::new()),
         seed,
     );

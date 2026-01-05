@@ -264,9 +264,11 @@ pub mod clients {
         client
     }
 
-    /// Send client for MQTT messages. Polls the `SEND_CHANNEL` to know when to send a message.
+    /// Send client for MQTT messages. Waits for network stack then polls the `SEND_CHANNEL`.
     #[embassy_executor::task]
-    pub async fn mqtt_send_client(stack: Stack<'static>) {
+    pub async fn mqtt_send_client(_app_state: &'static crate::system::SystemState) {
+        log::info!("MQTT send client: Waiting for network...");
+        let stack = crate::network::get_network_stack().await;
         log::info!("MQTT send client: Starting");
 
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
@@ -356,14 +358,16 @@ pub mod clients {
         }
     }
 
-    /// Receive client for MQTT messages. Publishes into the relevent publisher.
+    /// Receive client for MQTT messages. Waits for network then publishes to the relevant publisher.
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
-        stack: Stack<'static>,
+        _app_state: &'static crate::system::SystemState,
         display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
+        log::info!("MQTT receive client: Waiting for network...");
+        let stack = crate::network::get_network_stack().await;
         log::info!("MQTT receive client: Starting");
 
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();

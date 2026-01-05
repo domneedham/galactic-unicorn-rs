@@ -1,7 +1,7 @@
 use embassy_futures::select::{select, Either};
 use embassy_rp::{
     gpio::Input,
-    peripherals::{PIN_0, PIN_1, PIN_21, PIN_26, PIN_3},
+    peripherals::{PIN_0, PIN_1, PIN_21, PIN_26, PIN_3, PIN_6},
     Peri,
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
@@ -34,6 +34,9 @@ pub static SWITCH_B_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new
 
 /// Signal for when the switch c button has been pressed.
 pub static SWITCH_C_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new();
+
+/// Signal for when the switch d button has been pressed.
+pub static SWITCH_D_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new();
 
 /// Wait for changes async on the brightness up button being pressed.
 ///
@@ -165,6 +168,32 @@ pub async fn button_c_task(button_peri: Peri<'static, PIN_3>) -> ! {
     }
 }
 
+/// Wait for changes async on the switch d button being pressed.
+///
+/// Will inform signal of button press after the full press has been completed.
+/// The type of press is recorded in the ButtonPress enum.
+///
+/// This task has no way of cancellation.
+#[embassy_executor::task]
+pub async fn button_d_task(button_peri: Peri<'static, PIN_6>) -> ! {
+    let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
+    loop {
+        // sit here until button is pressed down
+        button.wait_for_low().await;
+
+        let press: ButtonPress = button_pressed(&mut button).await;
+        publish_to_channel(press, &UnicornButtons::SwitchD);
+
+        // wait for button to be released
+        if button.is_low() {
+            button.wait_for_high().await;
+        }
+
+        // add debounce
+        Timer::after(Duration::from_millis(200)).await;
+    }
+}
+
 /// Determine the type of press performed on the button.
 #[allow(clippy::needless_pass_by_ref_mut)] // needs to be mutable to use wait_for_*()
 async fn button_pressed(button: &mut Input<'_>) -> ButtonPress {
@@ -207,7 +236,7 @@ fn publish_to_channel(press: ButtonPress, button_type: &UnicornButtons) {
         UnicornButtons::SwitchA => SWITCH_A_PRESS.signal(press),
         UnicornButtons::SwitchB => SWITCH_B_PRESS.signal(press),
         UnicornButtons::SwitchC => SWITCH_C_PRESS.signal(press),
-        UnicornButtons::SwitchD => todo!(),
+        UnicornButtons::SwitchD => SWITCH_D_PRESS.signal(press),
         UnicornButtons::BrightnessUp => BRIGHTNESS_UP_PRESS.signal(press),
         UnicornButtons::BrightnessDown => BRIGHTNESS_DOWN_PRESS.signal(press),
         UnicornButtons::VolumeUp => todo!(),

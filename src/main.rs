@@ -11,6 +11,7 @@ mod buttons;
 mod clock_app;
 mod config;
 mod display;
+mod draw_app;
 mod effects_app;
 mod fonts;
 mod mqtt;
@@ -34,6 +35,7 @@ use panic_halt as _;
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
 
+use crate::buttons::button_d_task;
 use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
 };
@@ -86,12 +88,14 @@ async fn main(spawner: Spawner) {
     let clock_app = clock_app::ClockApp::new(display, time);
     let effects_app = effects_app::EffectsApp::new();
     let mqtt_app = mqtt_app::MqttApp::new();
+    let draw_app = draw_app::DrawApp::new(app_state, spawner);
 
     let app_controller = app::AppController::new(
         system_app,
         clock_app,
         effects_app,
         mqtt_app,
+        draw_app,
         app_state,
         spawner,
     );
@@ -105,17 +109,25 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button_a_task(button_pins.switch_a)).unwrap();
     spawner.spawn(button_b_task(button_pins.switch_b)).unwrap();
     spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
+    spawner.spawn(button_d_task(button_pins.switch_d)).unwrap();
 
     Timer::after(Duration::from_millis(2000)).await;
 
-    log::info!("Joining wifi network...");
+    log::info!("Starting background services...");
 
-    let stack = network::create_and_join_network(
-        spawner, app_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1,
-    )
-    .await;
-
-    log::info!("Joined wifi network...");
+    // Spawn network init in background (doesn't block)
+    spawner
+        .spawn(network::network_init_task(
+            app_state,
+            p.PIN_23,
+            p.PIN_24,
+            p.PIN_25,
+            p.PIN_29,
+            p.PIO1,
+            p.DMA_CH1,
+            spawner,
+        ))
+        .unwrap();
 
     static MQTT_DISPLAY_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
@@ -126,16 +138,18 @@ async fn main(spawner: Spawner) {
     static MQTT_SYSTEM_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
 
-    spawner.spawn(time::ntp::ntp_worker(stack, time)).unwrap();
-
-    // mqtt clients
+    // These tasks spawn immediately but wait internally for network stack
     spawner
-        .spawn(mqtt::clients::mqtt_send_client(stack))
+        .spawn(time::ntp::ntp_worker(time, app_state))
+        .unwrap();
+
+    spawner
+        .spawn(mqtt::clients::mqtt_send_client(app_state))
         .unwrap();
 
     spawner
         .spawn(mqtt::clients::mqtt_receive_client(
-            stack,
+            app_state,
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
             MQTT_APP_CHANNEL.publisher().unwrap(),
             MQTT_SYSTEM_CHANNEL.publisher().unwrap(),

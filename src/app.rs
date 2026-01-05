@@ -1,7 +1,7 @@
 use core::str::FromStr;
 
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, select3, Either3};
+use embassy_futures::select::{select, select4, Either4};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::pubsub::Subscriber;
@@ -13,10 +13,11 @@ use static_cell::make_static;
 use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
-use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS};
+use crate::buttons::{ButtonPress, SWITCH_A_PRESS, SWITCH_B_PRESS, SWITCH_C_PRESS, SWITCH_D_PRESS};
 use crate::clock_app::ClockApp;
 use crate::display::messages::{DisplayGraphicsMessage, DisplayTextMessage};
 use crate::display::STOP_CURRENT_DISPLAY;
+use crate::draw_app::DrawApp;
 use crate::effects_app::EffectsApp;
 use crate::mqtt::topics::APP_STATE_TOPIC;
 use crate::mqtt::{
@@ -46,6 +47,9 @@ enum Apps {
 
     /// The MQTT app.
     Mqtt,
+
+    /// The draw app.
+    Draw,
 }
 
 pub trait UnicornApp {
@@ -66,6 +70,26 @@ pub trait UnicornApp {
 
     /// Send MQTT state for this app. Can be called whilst not active.
     async fn send_mqtt_state(&self);
+}
+
+/// Optional trait for apps to declare resource dependencies and lifecycle hooks.
+/// Apps that don't implement this have no special requirements (backward compatible).
+pub trait AppCapabilities {
+    /// Does this app require network connectivity to function?
+    /// Default: false
+    /// Currently not used by the framework, but available for future extensions.
+    #[allow(dead_code)]
+    fn requires_network(&self) -> bool {
+        false
+    }
+
+    /// Called when network becomes available after app is already started.
+    /// Only called if requires_network() returns true.
+    async fn on_network_ready(&self) {}
+
+    /// Called when network is lost while app is running.
+    /// Only called if requires_network() returns true.
+    async fn on_network_lost(&self) {}
 }
 
 /// App controller is responsible for managing apps by:
@@ -91,6 +115,9 @@ pub struct AppController {
     /// MQTT app.
     mqtt_app: &'static MqttApp,
 
+    /// Draw app.
+    draw_app: &'static DrawApp,
+
     /// System state.
     system_state: &'static SystemState,
 
@@ -106,6 +133,7 @@ impl AppController {
         clock_app: &'static ClockApp,
         effects_app: &'static EffectsApp,
         mqtt_app: &'static MqttApp,
+        draw_app: &'static DrawApp,
         system_state: &'static SystemState,
         spawner: Spawner,
     ) -> &'static Self {
@@ -116,6 +144,7 @@ impl AppController {
             clock_app,
             effects_app,
             mqtt_app,
+            draw_app,
             system_state,
             spawner,
         });
@@ -136,16 +165,18 @@ impl AppController {
         log::info!("App controller started");
 
         loop {
-            let (app, press): (Apps, ButtonPress) = match select3(
+            let (app, press): (Apps, ButtonPress) = match select4(
                 SWITCH_A_PRESS.wait(),
                 SWITCH_B_PRESS.wait(),
                 SWITCH_C_PRESS.wait(),
+                SWITCH_D_PRESS.wait(),
             )
             .await
             {
-                Either3::First(press) => (Apps::Clock, press),
-                Either3::Second(press) => (Apps::Effects, press),
-                Either3::Third(press) => (Apps::Mqtt, press),
+                Either4::First(press) => (Apps::Clock, press),
+                Either4::Second(press) => (Apps::Effects, press),
+                Either4::Third(press) => (Apps::Mqtt, press),
+                Either4::Fourth(press) => (Apps::Draw, press),
             };
 
             if app == *self.active_app.lock().await {
@@ -156,6 +187,7 @@ impl AppController {
                     Apps::Clock => self.clock_app.button_press(press).await,
                     Apps::Effects => self.effects_app.button_press(press).await,
                     Apps::Mqtt => self.mqtt_app.button_press(press).await,
+                    Apps::Draw => self.draw_app.button_press(press).await,
                 }
             } else {
                 self.change_app(app).await;
@@ -174,6 +206,7 @@ impl AppController {
         self.clock_app.send_mqtt_state().await;
         self.effects_app.send_mqtt_state().await;
         self.mqtt_app.send_mqtt_state().await;
+        self.draw_app.send_mqtt_state().await;
     }
 
     /// Change the current app by stopping the current and starting the new chosen app.
@@ -184,6 +217,7 @@ impl AppController {
             return;
         }
 
+        // Stop current app
         match current_app {
             Apps::System => {
                 self.system_app.stop().await;
@@ -192,16 +226,30 @@ impl AppController {
             Apps::Clock => self.clock_app.stop().await,
             Apps::Effects => self.effects_app.stop().await,
             Apps::Mqtt => self.mqtt_app.stop().await,
+            Apps::Draw => self.draw_app.stop().await,
         };
 
         *self.previous_app.lock().await = current_app;
         *self.active_app.lock().await = new_app;
+
+        // Start new app
         match new_app {
             Apps::System => self.system_app.start().await,
             Apps::Clock => self.clock_app.start().await,
             Apps::Effects => self.effects_app.start().await,
             Apps::Mqtt => self.mqtt_app.start().await,
+            Apps::Draw => {
+                self.draw_app.start().await;
+                // Check if network is ready and call hook if so
+                if matches!(
+                    self.system_state.get_network_state().await,
+                    NetworkState::Connected
+                ) {
+                    self.draw_app.on_network_ready().await;
+                }
+            }
         };
+
         CHANGE_APP.signal(new_app);
     }
 }
@@ -243,18 +291,39 @@ async fn process_state_change_task(app_controller: &'static AppController) {
 
         match state_update {
             StateUpdates::Network => {
-                match app_controller.system_state.get_network_state().await {
+                let network_state = app_controller.system_state.get_network_state().await;
+                let current_app = *app_controller.active_app.lock().await;
+
+                match network_state {
                     NetworkState::NotInitialised => {
                         log::info!("Network state not initialised");
+                    }
+                    NetworkState::Initializing => {
+                        log::info!("Network initializing...");
+                        // Apps show loading/waiting state
                     }
                     NetworkState::Connected => {
                         log::info!("Network state connected");
 
-                        let previous_app = *app_controller.previous_app.lock().await;
-                        app_controller.change_app(previous_app).await;
+                        // Call lifecycle hooks for current app
+                        if current_app == Apps::Draw {
+                            app_controller.draw_app.on_network_ready().await;
+                        }
+
+                        // If on System app, return to previous app
+                        if current_app == Apps::System {
+                            let previous_app = *app_controller.previous_app.lock().await;
+                            app_controller.change_app(previous_app).await;
+                        }
                     }
                     NetworkState::Error => {
-                        log::info!("Switching to system app due to network error");
+                        log::info!("Network error - switching to system app");
+
+                        // Call lifecycle hooks
+                        if current_app == Apps::Draw {
+                            app_controller.draw_app.on_network_lost().await;
+                        }
+
                         app_controller.change_app(Apps::System).await;
                     }
                 };
@@ -282,6 +351,9 @@ async fn display_task(app_controller: &'static AppController) {
             }
             Apps::Mqtt => {
                 select(app_controller.mqtt_app.display(), CHANGE_APP.wait()).await;
+            }
+            Apps::Draw => {
+                select(app_controller.draw_app.display(), CHANGE_APP.wait()).await;
             }
         };
 
