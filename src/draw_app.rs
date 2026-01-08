@@ -10,10 +10,7 @@ use unicorn_graphics::UnicornGraphics;
 use crate::{
     app::{AppCapabilities, UnicornApp},
     buttons::ButtonPress,
-    display::{
-        messages::{DisplayGraphicsMessage, DisplayTextMessage},
-        Display,
-    },
+    display::messages::{DisplayGraphicsMessage, DisplayTextMessage},
     mqtt::MqttReceiveMessage,
     network::{get_network_stack, NetworkState},
     system::SystemState,
@@ -54,10 +51,10 @@ impl DrawApp {
             .await;
     }
 
-    async fn set_pixel(&self, x: usize, y: usize, color: Rgb888) {
-        if x < WIDTH && y < HEIGHT {
+    async fn set_pixel(&self, x: i32, y: i32, color: Rgb888) {
+        if x >= 0 && y >= 0 && x < WIDTH as i32 && y < HEIGHT as i32 {
             let mut buffer = self.drawing_buffer.lock().await;
-            buffer.set_pixel(Point::new(x as i32, y as i32), color);
+            buffer.set_pixel(Point::new(x, y), color);
             DisplayGraphicsMessage::from_app(buffer.get_pixels(), Duration::from_millis(1))
                 .send_and_replace_queue_and_show_now()
                 .await;
@@ -96,54 +93,60 @@ impl DrawApp {
                 Err(e) => return Err(e),
             };
 
-            let response: &[u8] = if let Err(_) = self.parse_command(&buffer[..n]).await {
-                b"E\n"
+            const SUCCESS: u8 = 0x01;
+            const ERROR: u8 = 0x00;
+            let response: u8 = if let Err(_) = self.parse_command(&buffer[..n]).await {
+                ERROR
             } else {
-                b"K\n"
+                SUCCESS
             };
 
             // Write response (handle partial writes)
-            let mut written = 0;
-            while written < response.len() {
-                let n = socket.write(&response[written..]).await?;
-                written += n;
-            }
+            socket.write(&[response]).await?;
 
             socket.flush().await?;
         }
     }
 
     async fn parse_command(&self, data: &[u8]) -> Result<(), &'static str> {
-        let cmd = core::str::from_utf8(data).map_err(|_| "Invalid UTF-8")?;
-        let cmd = cmd.trim();
-
-        let parts: heapless::Vec<&str, 8> = cmd.split_whitespace().collect();
-
-        if parts.is_empty() {
+        if data.len() < 1 {
             return Err("Empty command");
         }
 
-        match parts[0] {
-            "CLR" => {
-                self.clear_drawing().await;
-                Ok(())
-            }
-            "PXL" => {
-                if parts.len() != 6 {
-                    return Err("PXL requires: x y r g b");
+        const VERSION_1: u8 = 0x01;
+
+        // version 1
+        if data[0] == VERSION_1 {
+            const CMD_CLEAR: u8 = 0x00;
+            const CMD_SET_PIXEL: u8 = 0x01;
+
+            return match data[1] {
+                CMD_CLEAR => {
+                    // clear
+                    self.clear_drawing().await;
+                    Ok(())
                 }
+                CMD_SET_PIXEL => {
+                    // set pixel
+                    if data.len() != 7 {
+                        return Err("PXL requires 6 bytes");
+                    }
 
-                let x: usize = parts[1].parse().map_err(|_| "Invalid x")?;
-                let y: usize = parts[2].parse().map_err(|_| "Invalid y")?;
-                let r: u8 = parts[3].parse().map_err(|_| "Invalid r")?;
-                let g: u8 = parts[4].parse().map_err(|_| "Invalid g")?;
-                let b: u8 = parts[5].parse().map_err(|_| "Invalid b")?;
+                    let x = data[2] as usize;
+                    let y = data[3] as usize;
+                    let r = data[4];
+                    let g = data[5];
+                    let b = data[6];
 
-                self.set_pixel(x, y, Rgb888::new(r, g, b)).await;
-                Ok(())
-            }
-            _ => Err("Unknown command"),
+                    self.set_pixel(x as i32, y as i32, Rgb888::new(r, g, b))
+                        .await;
+                    Ok(())
+                }
+                _ => Err("Unknown command"),
+            };
         }
+
+        return Err("Unknown version");
     }
 }
 
