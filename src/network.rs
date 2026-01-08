@@ -51,35 +51,17 @@ static NETWORK_STACK_READY: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
 /// Get the network stack (blocks until ready). Returns a copy of the Stack (Stack is Copy).
 pub async fn get_network_stack() -> Stack<'static> {
-    log::info!("get_network_stack: Called, checking if initialized...");
-    Timer::after(Duration::from_millis(10)).await;
-
     // Poll until StaticCell is initialized
     loop {
         // Check if initialized using atomic flag
         if NETWORK_STACK_INITIALIZED.load(Ordering::Acquire) {
-            log::info!("get_network_stack: Stack is initialized, acquiring mutex...");
-            Timer::after(Duration::from_millis(10)).await;
-
             // SAFETY: We checked the atomic flag, so we know NETWORK_STACK_REF has been set
             let stack_mutex = unsafe {
                 NETWORK_STACK_REF.expect("NETWORK_STACK_REF should be set after initialization")
             };
 
-            log::info!("get_network_stack: Got mutex reference, locking...");
-            Timer::after(Duration::from_millis(10)).await;
-
             let stack_opt = stack_mutex.lock().await;
-
-            log::info!("get_network_stack: Mutex locked, extracting stack...");
-            Timer::after(Duration::from_millis(10)).await;
-
-            let stack = stack_opt.expect("Network stack should be Some after initialization");
-
-            log::info!("get_network_stack: Stack extracted successfully, returning");
-            Timer::after(Duration::from_millis(10)).await;
-
-            return stack;
+            return stack_opt.expect("Network stack should be Some after initialization");
         }
         // Small delay before checking again
         Timer::after(Duration::from_millis(10)).await;
@@ -147,7 +129,6 @@ pub async fn network_init_task(
     // Signal that stack is ready
     NETWORK_STACK_READY.signal(());
     log::info!("Network stack stored and ready");
-    Timer::after(Duration::from_millis(50)).await;
 }
 
 /// Create and join the wifi network. Will wait until it has successfully joined.

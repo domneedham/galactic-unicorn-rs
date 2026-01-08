@@ -88,7 +88,7 @@ async fn main(spawner: Spawner) {
     let clock_app = clock_app::ClockApp::new(display, time);
     let effects_app = effects_app::EffectsApp::new();
     let mqtt_app = mqtt_app::MqttApp::new();
-    let draw_app = draw_app::DrawApp::new(app_state, spawner);
+    let draw_app = draw_app::DrawApp::new(app_state);
 
     let app_controller = app::AppController::new(
         system_app,
@@ -118,14 +118,7 @@ async fn main(spawner: Spawner) {
     // Spawn network init in background (doesn't block)
     spawner
         .spawn(network::network_init_task(
-            app_state,
-            p.PIN_23,
-            p.PIN_24,
-            p.PIN_25,
-            p.PIN_29,
-            p.PIO1,
-            p.DMA_CH1,
-            spawner,
+            app_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1, spawner,
         ))
         .unwrap();
 

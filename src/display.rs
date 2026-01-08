@@ -765,16 +765,20 @@ pub mod messages {
         /// Queue a message into the channel, clearing anything before it.
         pub async fn send_and_replace_queue(self) {
             match self.channel {
-                DisplayChannels::MQTT => {
-                    // clear channel
-                    while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {}
-                    self.send().await;
-                }
-                DisplayChannels::APP => {
-                    while APP_DISPLAY_CHANNEL.try_receive().is_ok() {}
-                    self.send().await;
-                }
+                DisplayChannels::MQTT => while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {},
+                DisplayChannels::APP => while APP_DISPLAY_CHANNEL.try_receive().is_ok() {},
             }
+            self.send().await;
+        }
+
+        /// Queue a message into the channel, clearing anything before it.
+        pub async fn send_and_replace_queue_and_show_now(self) {
+            match self.channel {
+                DisplayChannels::MQTT => while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {},
+                DisplayChannels::APP => while APP_DISPLAY_CHANNEL.try_receive().is_ok() {},
+            }
+            STOP_CURRENT_DISPLAY.signal(true);
+            self.send().await;
         }
 
         /// Show the text immediately, skipping the display channel queue.
@@ -880,6 +884,17 @@ pub mod messages {
                     self.send().await;
                 }
             }
+        }
+
+        /// Queue a message into the channel, clearing anything before it.
+        pub async fn send_and_replace_queue_and_show_now(self) {
+            match self.channel {
+                DisplayChannels::MQTT => while MQTT_DISPLAY_CHANNEL.try_receive().is_ok() {},
+                DisplayChannels::APP => while APP_DISPLAY_CHANNEL.try_receive().is_ok() {},
+            }
+
+            STOP_CURRENT_DISPLAY.signal(true);
+            self.send().await;
         }
     }
 }
