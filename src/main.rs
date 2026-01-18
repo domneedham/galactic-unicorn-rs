@@ -91,6 +91,7 @@ async fn main(spawner: Spawner) {
     let draw_app = draw_app::DrawApp::new(app_state);
 
     let app_controller = app::AppController::new(
+        display,
         system_app,
         clock_app,
         effects_app,

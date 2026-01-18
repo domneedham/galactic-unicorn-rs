@@ -1,16 +1,13 @@
-use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_net::tcp::TcpSocket;
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex, signal::Signal};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
 use embassy_time::{Duration, Timer};
-use embedded_graphics::{pixelcolor::Rgb888, prelude::Point};
-use galactic_unicorn_embassy::{HEIGHT, WIDTH};
+use embedded_graphics::pixelcolor::Rgb888;
 use static_cell::make_static;
-use unicorn_graphics::UnicornGraphics;
 
 use crate::{
-    app::{AppCapabilities, UnicornApp},
+    app::{AppNotificationPolicy, AppRunner, UnicornApp, UnicornAppRunner},
     buttons::ButtonPress,
-    display::messages::{DisplayGraphicsMessage, DisplayTextMessage},
+    display::{DisplayState, GraphicsBufferWriter},
     mqtt::MqttReceiveMessage,
     network::{get_network_stack, NetworkState},
     system::SystemState,
@@ -23,60 +20,66 @@ static STOP_TCP_SERVER: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
 pub struct DrawApp {
     system_state: &'static SystemState,
-    drawing_buffer: Mutex<ThreadModeRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
-    server_active: AtomicBool,
-    is_active: AtomicBool,
+    display_state: &'static DisplayState,
 }
 
 impl DrawApp {
     /// Create the static ref to Draw app.
     /// Must only be called once or will panic.
-    pub fn new(system_state: &'static SystemState) -> &'static Self {
-        let mut graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
-        graphics.clear_all();
-
+    pub fn new(
+        system_state: &'static SystemState,
+        display_state: &'static DisplayState,
+    ) -> &'static Self {
         make_static!(Self {
             system_state,
-            drawing_buffer: Mutex::new(graphics),
-            server_active: AtomicBool::new(false),
-            is_active: AtomicBool::new(false),
+            display_state
         })
     }
+}
 
-    async fn clear_drawing(&self) {
-        let mut buffer = self.drawing_buffer.lock().await;
-        buffer.clear_all();
-        DisplayGraphicsMessage::from_app(buffer.get_pixels(), Duration::from_millis(1))
-            .send_and_replace_queue_and_show_now()
-            .await;
+impl UnicornApp for DrawApp {
+    async fn create_runner<'a>(
+        &self,
+        graphics_buffer: GraphicsBufferWriter<'a>,
+        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+    ) -> AppRunner<'a> {
+        AppRunner::Draw(DrawAppRunner::new(
+            graphics_buffer,
+            self.display_state,
+            self.system_state,
+            notification_policy,
+        ))
     }
+}
 
-    async fn set_pixel(&self, x: i32, y: i32, color: Rgb888) {
-        if x >= 0 && y >= 0 && x < WIDTH as i32 && y < HEIGHT as i32 {
-            let mut buffer = self.drawing_buffer.lock().await;
-            buffer.set_pixel(Point::new(x, y), color);
-            DisplayGraphicsMessage::from_app(buffer.get_pixels(), Duration::from_millis(1))
-                .send_and_replace_queue_and_show_now()
-                .await;
+pub struct DrawAppRunner<'a> {
+    pub graphics_buffer: GraphicsBufferWriter<'a>,
+    pub display_state: &'static DisplayState,
+    pub system_state: &'static SystemState,
+    pub notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+}
+
+impl<'a> DrawAppRunner<'a> {
+    pub fn new(
+        graphics_buffer: GraphicsBufferWriter<'a>,
+        display_state: &'static DisplayState,
+        system_state: &'static SystemState,
+        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+    ) -> Self {
+        Self {
+            graphics_buffer,
+            display_state,
+            system_state,
+            notification_policy,
         }
-    }
-
-    async fn stop_tcp_server(&self) {
-        if !self.server_active.load(Ordering::Relaxed) {
-            return;
-        }
-
-        log::info!("Stopping TCP server...");
-        STOP_TCP_SERVER.signal(());
-        self.server_active.store(false, Ordering::Relaxed);
     }
 
     async fn handle_connection(
-        &self,
+        &mut self,
         socket: &mut TcpSocket<'_>,
     ) -> Result<(), embassy_net::tcp::Error> {
         // clear to start with blank canvas
-        self.clear_drawing().await;
+        self.graphics_buffer.clear().await;
 
         let mut buffer = [0u8; 256];
 
@@ -108,7 +111,7 @@ impl DrawApp {
         }
     }
 
-    async fn parse_command(&self, data: &[u8]) -> Result<(), &'static str> {
+    async fn parse_command(&mut self, data: &[u8]) -> Result<(), &'static str> {
         if data.len() < 1 {
             return Err("Empty command");
         }
@@ -123,7 +126,7 @@ impl DrawApp {
             return match data[1] {
                 CMD_CLEAR => {
                     // clear
-                    self.clear_drawing().await;
+                    self.graphics_buffer.clear().await;
                     Ok(())
                 }
                 CMD_SET_PIXEL => {
@@ -138,7 +141,8 @@ impl DrawApp {
                     let g = data[5];
                     let b = data[6];
 
-                    self.set_pixel(x as i32, y as i32, Rgb888::new(r, g, b))
+                    self.graphics_buffer
+                        .set_pixel(x as i32, y as i32, Rgb888::new(r, g, b))
                         .await;
                     Ok(())
                 }
@@ -150,73 +154,63 @@ impl DrawApp {
     }
 }
 
-impl UnicornApp for DrawApp {
-    async fn display(&self) {
+impl<'a> UnicornAppRunner<'a> for DrawAppRunner<'a> {
+    async fn run(&mut self) -> ! {
         loop {
             let network_state = self.system_state.get_network_state().await;
 
             match network_state {
                 NetworkState::NotInitialised | NetworkState::Initializing => {
-                    DisplayTextMessage::from_app(
-                        "WiFi connecting...",
-                        None,
-                        None,
-                        Some(Duration::from_secs(1)),
-                    )
-                    .send_and_replace_queue()
-                    .await;
+                    self.notification_policy
+                        .signal(AppNotificationPolicy::AllowAll);
+                    self.graphics_buffer
+                        .display_text("WiFi connecting", None, None, None, self.display_state)
+                        .await;
 
                     Timer::after(Duration::from_millis(500)).await;
                 }
                 NetworkState::Connected => {
+                    self.notification_policy
+                        .signal(AppNotificationPolicy::DenyNormal);
                     let stack = get_network_stack().await;
 
                     let mut rx_buffer = [0; 1024];
                     let mut tx_buffer = [0; 1024];
 
-                    loop {
-                        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-                        socket.set_timeout(Some(Duration::from_secs(30)));
+                    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+                    socket.set_timeout(Some(Duration::from_secs(30)));
 
-                        DisplayTextMessage::from_app(
+                    log::info!("Listening on TCP:{}...", DRAW_SERVER_PORT);
+
+                    self.graphics_buffer
+                        .display_text(
                             "Waiting for connection",
                             None,
                             None,
                             Some(Duration::from_secs(1)),
+                            self.display_state,
                         )
-                        .send_and_replace_queue()
                         .await;
 
-                        log::info!("Listening on TCP:{}...", DRAW_SERVER_PORT);
+                    if let Err(e) = socket.accept(DRAW_SERVER_PORT).await {
+                        log::warn!("TCP accept error: {:?}", e);
+                        Timer::after(Duration::from_secs(1)).await;
+                        continue;
+                    }
 
-                        if let Err(e) = socket.accept(DRAW_SERVER_PORT).await {
-                            log::warn!("TCP accept error: {:?}", e);
-                            Timer::after(Duration::from_secs(1)).await;
-                            continue;
-                        }
+                    log::info!("Client connected");
 
-                        log::info!("Client connected");
-
-                        match self.handle_connection(&mut socket).await {
-                            Ok(_) => log::info!("Client disconnected"),
-                            Err(e) => log::warn!("Connection error: {:?}", e),
-                        }
-
-                        if STOP_TCP_SERVER.signaled() {
-                            STOP_TCP_SERVER.reset();
-                            break;
-                        }
+                    match self.handle_connection(&mut socket).await {
+                        Ok(_) => log::info!("Client disconnected"),
+                        Err(e) => log::warn!("Connection error: {:?}", e),
                     }
                 }
                 NetworkState::Error => {
-                    DisplayTextMessage::from_app(
-                        "Network Error!",
-                        None,
-                        None,
-                        Some(Duration::from_secs(1)),
-                    )
-                    .send_and_replace_queue()
-                    .await;
+                    self.notification_policy
+                        .signal(AppNotificationPolicy::AllowAll);
+                    self.graphics_buffer
+                        .display_text("Network Error!", None, None, None, self.display_state)
+                        .await;
 
                     Timer::after(Duration::from_millis(500)).await;
                 }
@@ -224,44 +218,7 @@ impl UnicornApp for DrawApp {
         }
     }
 
-    async fn start(&self) {
-        log::info!("DrawApp started");
-        self.is_active.store(true, Ordering::Relaxed);
-    }
-
-    async fn stop(&self) {
-        log::info!("DrawApp stopped");
-        self.is_active.store(false, Ordering::Relaxed);
-
-        if self.server_active.load(Ordering::Relaxed) {
-            self.stop_tcp_server().await;
-        }
-    }
-
-    async fn button_press(&self, press: ButtonPress) {
-        match press {
-            ButtonPress::Short => self.clear_drawing().await,
-            _ => {}
-        }
-    }
-
-    async fn process_mqtt_message(&self, _message: MqttReceiveMessage) {}
-
-    async fn send_mqtt_state(&self) {}
-}
-
-impl AppCapabilities for DrawApp {
-    fn requires_network(&self) -> bool {
-        true
-    }
-
-    async fn on_network_ready(&self) {}
-
-    async fn on_network_lost(&self) {
-        log::info!("DrawApp: network lost");
-
-        if self.server_active.load(Ordering::Relaxed) {
-            self.stop_tcp_server().await;
-        }
+    fn release_writer(self) -> GraphicsBufferWriter<'a> {
+        self.graphics_buffer
     }
 }

@@ -4,11 +4,12 @@ use embassy_rp::{
     peripherals::{PIN_0, PIN_1, PIN_21, PIN_26, PIN_3, PIN_6},
     Peri,
 };
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, pubsub::Publisher};
 use embassy_time::{Duration, Timer};
 use galactic_unicorn_embassy::buttons::UnicornButtons;
 
 /// Type of button press made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonPress {
     /// When the button click duration is <=500ms.
     Short,
@@ -20,24 +21,6 @@ pub enum ButtonPress {
     Double,
 }
 
-/// Signal for when the brightness up button has been pressed.
-pub static BRIGHTNESS_UP_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new();
-
-/// Signal for when the brightness down button has been pressed.
-pub static BRIGHTNESS_DOWN_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new();
-
-/// Signal for when the switch a button has been pressed.
-pub static SWITCH_A_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new();
-
-/// Signal for when the switch b button has been pressed.
-pub static SWITCH_B_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new();
-
-/// Signal for when the switch c button has been pressed.
-pub static SWITCH_C_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new();
-
-/// Signal for when the switch d button has been pressed.
-pub static SWITCH_D_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new();
-
 /// Wait for changes async on the brightness up button being pressed.
 ///
 /// Will inform signal of button press after the full press has been completed.
@@ -45,14 +28,19 @@ pub static SWITCH_D_PRESS: Signal<ThreadModeRawMutex, ButtonPress> = Signal::new
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn brightness_up_task(button_peri: Peri<'static, PIN_21>) -> ! {
+pub async fn brightness_up_task(
+    button_peri: Peri<'static, PIN_21>,
+    publisher: Publisher<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
+) -> ! {
     let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
 
         let press: ButtonPress = button_pressed(&mut button).await;
-        publish_to_channel(press, &UnicornButtons::BrightnessUp);
+        publisher
+            .publish((UnicornButtons::BrightnessUp, press))
+            .await;
 
         // wait for button to be released
         if button.is_low() {
@@ -71,14 +59,19 @@ pub async fn brightness_up_task(button_peri: Peri<'static, PIN_21>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn brightness_down_task(button_peri: Peri<'static, PIN_26>) -> ! {
+pub async fn brightness_down_task(
+    button_peri: Peri<'static, PIN_26>,
+    publisher: Publisher<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
+) -> ! {
     let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
 
         let press: ButtonPress = button_pressed(&mut button).await;
-        publish_to_channel(press, &UnicornButtons::BrightnessDown);
+        publisher
+            .publish((UnicornButtons::BrightnessDown, press))
+            .await;
 
         // wait for button to be released
         if button.is_low() {
@@ -97,14 +90,17 @@ pub async fn brightness_down_task(button_peri: Peri<'static, PIN_26>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn button_a_task(button_peri: Peri<'static, PIN_0>) -> ! {
+pub async fn button_a_task(
+    button_peri: Peri<'static, PIN_0>,
+    publisher: Publisher<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
+) -> ! {
     let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
 
         let press: ButtonPress = button_pressed(&mut button).await;
-        publish_to_channel(press, &UnicornButtons::SwitchA);
+        publisher.publish((UnicornButtons::SwitchA, press)).await;
 
         // wait for button to be released
         if button.is_low() {
@@ -123,14 +119,17 @@ pub async fn button_a_task(button_peri: Peri<'static, PIN_0>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn button_b_task(button_peri: Peri<'static, PIN_1>) -> ! {
+pub async fn button_b_task(
+    button_peri: Peri<'static, PIN_1>,
+    publisher: Publisher<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
+) -> ! {
     let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
 
         let press: ButtonPress = button_pressed(&mut button).await;
-        publish_to_channel(press, &UnicornButtons::SwitchB);
+        publisher.publish((UnicornButtons::SwitchB, press)).await;
 
         // wait for button to be released
         if button.is_low() {
@@ -149,14 +148,17 @@ pub async fn button_b_task(button_peri: Peri<'static, PIN_1>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn button_c_task(button_peri: Peri<'static, PIN_3>) -> ! {
+pub async fn button_c_task(
+    button_peri: Peri<'static, PIN_3>,
+    publisher: Publisher<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
+) -> ! {
     let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
 
         let press: ButtonPress = button_pressed(&mut button).await;
-        publish_to_channel(press, &UnicornButtons::SwitchC);
+        publisher.publish((UnicornButtons::SwitchC, press)).await;
 
         // wait for button to be released
         if button.is_low() {
@@ -175,14 +177,17 @@ pub async fn button_c_task(button_peri: Peri<'static, PIN_3>) -> ! {
 ///
 /// This task has no way of cancellation.
 #[embassy_executor::task]
-pub async fn button_d_task(button_peri: Peri<'static, PIN_6>) -> ! {
+pub async fn button_d_task(
+    button_peri: Peri<'static, PIN_6>,
+    publisher: Publisher<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
+) -> ! {
     let mut button = Input::new(button_peri, embassy_rp::gpio::Pull::Up);
     loop {
         // sit here until button is pressed down
         button.wait_for_low().await;
 
         let press: ButtonPress = button_pressed(&mut button).await;
-        publish_to_channel(press, &UnicornButtons::SwitchD);
+        publisher.publish((UnicornButtons::SwitchD, press)).await;
 
         // wait for button to be released
         if button.is_low() {
@@ -195,7 +200,6 @@ pub async fn button_d_task(button_peri: Peri<'static, PIN_6>) -> ! {
 }
 
 /// Determine the type of press performed on the button.
-#[allow(clippy::needless_pass_by_ref_mut)] // needs to be mutable to use wait_for_*()
 async fn button_pressed(button: &mut Input<'_>) -> ButtonPress {
     // wait until button is released or 500ms (long press)
     let res = select(
@@ -227,20 +231,5 @@ async fn button_pressed(button: &mut Input<'_>) -> ButtonPress {
 
         // 500ms passed by
         Either::Second(_) => ButtonPress::Long,
-    }
-}
-
-/// Publish the button press to the correct signal.
-fn publish_to_channel(press: ButtonPress, button_type: &UnicornButtons) {
-    match button_type {
-        UnicornButtons::SwitchA => SWITCH_A_PRESS.signal(press),
-        UnicornButtons::SwitchB => SWITCH_B_PRESS.signal(press),
-        UnicornButtons::SwitchC => SWITCH_C_PRESS.signal(press),
-        UnicornButtons::SwitchD => SWITCH_D_PRESS.signal(press),
-        UnicornButtons::BrightnessUp => BRIGHTNESS_UP_PRESS.signal(press),
-        UnicornButtons::BrightnessDown => BRIGHTNESS_DOWN_PRESS.signal(press),
-        UnicornButtons::VolumeUp => todo!(),
-        UnicornButtons::VolumeDown => todo!(),
-        UnicornButtons::Sleep => todo!(),
     }
 }
