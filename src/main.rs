@@ -21,10 +21,12 @@ mod system;
 mod system_app;
 mod time;
 
-use display::Display;
+use buttons::ButtonPress;
+use display::{Display, DisplayState};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
+use galactic_unicorn_embassy::buttons::UnicornButtons;
 
 use defmt_rtt as _;
 use embassy_time::Duration;
@@ -79,38 +81,71 @@ async fn main(spawner: Spawner) {
         p.USB,
         display_pins,
         sensor_pins,
-        spawner,
     );
 
-    let app_state = system::SystemState::new();
-    let system_app = system_app::SystemApp::new();
+    let display_state = DisplayState::new();
+    let system_state = system::SystemState::new();
+    let system_app = system_app::SystemApp::new(display_state);
     let time = time::Time::new();
-    let clock_app = clock_app::ClockApp::new(display, time);
+    let clock_app = clock_app::ClockAppState::new(display_state, time);
     let effects_app = effects_app::EffectsApp::new();
-    let mqtt_app = mqtt_app::MqttApp::new();
-    let draw_app = draw_app::DrawApp::new(app_state);
+    let mqtt_app = mqtt_app::MqttApp::new(display_state);
+    let draw_app = draw_app::DrawApp::new(system_state, display_state);
+
+    // Button channel: 4 capacity, 1 subscriber (AppController), 9 publishers (button tasks)
+    static BUTTON_CHANNEL: PubSubChannel<ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9> =
+        PubSubChannel::new();
 
     let app_controller = app::AppController::new(
         display,
+        display_state,
         system_app,
         clock_app,
         effects_app,
         mqtt_app,
         draw_app,
-        app_state,
+        system_state,
+        BUTTON_CHANNEL.subscriber().unwrap(),
+        MQTT_APP_CHANNEL.subscriber().unwrap(),
         spawner,
     );
 
     spawner
-        .spawn(brightness_up_task(button_pins.brightness_up))
+        .spawn(brightness_up_task(
+            button_pins.brightness_up,
+            BUTTON_CHANNEL.publisher().unwrap(),
+        ))
         .unwrap();
     spawner
-        .spawn(brightness_down_task(button_pins.brightness_down))
+        .spawn(brightness_down_task(
+            button_pins.brightness_down,
+            BUTTON_CHANNEL.publisher().unwrap(),
+        ))
         .unwrap();
-    spawner.spawn(button_a_task(button_pins.switch_a)).unwrap();
-    spawner.spawn(button_b_task(button_pins.switch_b)).unwrap();
-    spawner.spawn(button_c_task(button_pins.switch_c)).unwrap();
-    spawner.spawn(button_d_task(button_pins.switch_d)).unwrap();
+    spawner
+        .spawn(button_a_task(
+            button_pins.switch_a,
+            BUTTON_CHANNEL.publisher().unwrap(),
+        ))
+        .unwrap();
+    spawner
+        .spawn(button_b_task(
+            button_pins.switch_b,
+            BUTTON_CHANNEL.publisher().unwrap(),
+        ))
+        .unwrap();
+    spawner
+        .spawn(button_c_task(
+            button_pins.switch_c,
+            BUTTON_CHANNEL.publisher().unwrap(),
+        ))
+        .unwrap();
+    spawner
+        .spawn(button_d_task(
+            button_pins.switch_d,
+            BUTTON_CHANNEL.publisher().unwrap(),
+        ))
+        .unwrap();
 
     Timer::after(Duration::from_millis(2000)).await;
 
@@ -119,7 +154,7 @@ async fn main(spawner: Spawner) {
     // Spawn network init in background (doesn't block)
     spawner
         .spawn(network::network_init_task(
-            app_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1, spawner,
+            system_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1, spawner,
         ))
         .unwrap();
 
@@ -132,18 +167,27 @@ async fn main(spawner: Spawner) {
     static MQTT_SYSTEM_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
 
-    // These tasks spawn immediately but wait internally for network stack
+    // Spawn display state management tasks
     spawner
-        .spawn(time::ntp::ntp_worker(time, app_state))
+        .spawn(display::auto_brightness_task(display, display_state))
         .unwrap();
 
     spawner
-        .spawn(mqtt::clients::mqtt_send_client(app_state))
+        .spawn(display::state_to_mqtt_broadcast_task(display_state))
+        .unwrap();
+
+    // These tasks spawn immediately but wait internally for network stack
+    spawner
+        .spawn(time::ntp::ntp_worker(time, system_state))
+        .unwrap();
+
+    spawner
+        .spawn(mqtt::clients::mqtt_send_client(system_state))
         .unwrap();
 
     spawner
         .spawn(mqtt::clients::mqtt_receive_client(
-            app_state,
+            system_state,
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
             MQTT_APP_CHANNEL.publisher().unwrap(),
             MQTT_SYSTEM_CHANNEL.publisher().unwrap(),
@@ -152,23 +196,23 @@ async fn main(spawner: Spawner) {
 
     spawner
         .spawn(display::process_mqtt_messages_task(
-            display,
+            display_state,
             MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
 
-    spawner
-        .spawn(app::process_mqtt_messages_task(
-            app_controller,
-            MQTT_APP_CHANNEL.subscriber().unwrap(),
-        ))
-        .unwrap();
+    // spawner
+    //     .spawn(app::process_mqtt_messages_task(
+    //         app_controller,
+    //         MQTT_APP_CHANNEL.subscriber().unwrap(),
+    //     ))
+    //     .unwrap();
 
-    spawner
-        .spawn(system::process_mqtt_messages_task(
-            MQTT_SYSTEM_CHANNEL.subscriber().unwrap(),
-        ))
-        .unwrap();
+    // spawner
+    //     .spawn(system::process_mqtt_messages_task(
+    //         MQTT_SYSTEM_CHANNEL.subscriber().unwrap(),
+    //     ))
+    //     .unwrap();
 
     spawner
         .spawn(mqtt::homeassistant::hass_discovery_task(
@@ -177,5 +221,5 @@ async fn main(spawner: Spawner) {
         ))
         .unwrap();
 
-    app_controller.run_forever().await;
+    app_controller.run().await;
 }

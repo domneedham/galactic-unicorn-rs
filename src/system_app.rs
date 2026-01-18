@@ -1,130 +1,110 @@
-use embassy_time::{Duration, Instant, Timer};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
+use embassy_time::Timer;
 use embedded_graphics::{
     geometry::Point,
-    pixelcolor::{Rgb888, WebColors},
-    primitives::{Circle, Primitive, PrimitiveStyleBuilder},
+    pixelcolor::{Rgb888, RgbColor, WebColors},
 };
-use embedded_graphics_core::Drawable;
-use galactic_unicorn_embassy::{HEIGHT, WIDTH};
 use static_cell::make_static;
-use unicorn_graphics::UnicornGraphics;
 
 use crate::{
-    app::UnicornApp, buttons::ButtonPress, display::messages::DisplayGraphicsMessage,
-    mqtt::MqttReceiveMessage,
+    app::{AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
+    display::{DisplayState, GraphicsBufferWriter, HEIGHT, WIDTH},
 };
 
-use micromath::F32Ext;
-
-pub struct SystemApp;
+/// System app. Shows a loading animation.
+pub struct SystemApp {
+    display_state: &'static DisplayState,
+}
 
 impl SystemApp {
     /// Create the static ref to system app.
     /// Must only be called once or will panic.
-    pub fn new() -> &'static Self {
-        make_static!(Self {})
-    }
-
-    /// Linear interpolation function.
-    /// It linearly interpolates between a and b based on the value of t.
-    ///
-    /// a: The starting value.
-    /// b: The ending value.
-    /// t: The interpolation factor (between 0.0 and 1.0).
-    fn lerp(a: f32, b: f32, t: f32) -> f32 {
-        a + (b - a) * t
-    }
-
-    /// Ease in cubic function.
-    ///
-    /// Cube the input to make a gradual increase.
-    fn ease_in(t: f32) -> f32 {
-        t * t * t
-    }
-
-    /// Ease out cubic function.
-    ///
-    /// Calculates 1 minus (1 minus t) squared, which provides a gradual decrease in easing from 1 to 0.
-    fn ease_out(t: f32) -> f32 {
-        1.0 - (1.0 - t) * (1.0 - t)
+    pub fn new(display_state: &'static DisplayState) -> &'static Self {
+        make_static!(Self { display_state })
     }
 }
 
 impl UnicornApp for SystemApp {
-    async fn display(&self) {
-        const MAX_POSITION: f32 = (HEIGHT as i32 - 5) as f32;
+    async fn create_runner(
+        &'static self,
+        graphics_buffer: GraphicsBufferWriter,
+        inbox: AppRunnerInboxSubscribers,
+        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+    ) -> AppRunner {
+        AppRunner::System(SystemAppRunner::new(
+            graphics_buffer,
+            self,
+            inbox,
+            notification_policy,
+        ))
+    }
+}
 
-        let mut graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
+/// Runner for the system app. Shows a loading animation.
+pub struct SystemAppRunner {
+    graphics_buffer: GraphicsBufferWriter,
+    state: &'static SystemApp,
+    #[allow(dead_code)]
+    inbox: AppRunnerInboxSubscribers,
+    #[allow(dead_code)]
+    notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+}
 
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color(Rgb888::CSS_PURPLE)
-            .build();
+impl<'a> SystemAppRunner {
+    pub fn new(
+        graphics_buffer: GraphicsBufferWriter,
+        state: &'static SystemApp,
+        inbox: AppRunnerInboxSubscribers,
+        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+    ) -> Self {
+        Self {
+            graphics_buffer,
+            state,
+            inbox,
+            notification_policy,
+        }
+    }
+}
 
-        const ANIMATION_DURATION: f32 = 600.0;
-        let mut start_time = Instant::now();
-
-        let mut min_value = 0.0;
-        let mut max_value = MAX_POSITION;
+impl UnicornAppRunner for SystemAppRunner {
+    async fn run(&mut self) -> ! {
+        let mut color_sub = self.state.display_state.color.receiver().unwrap();
+        let mut position: i32 = 0;
+        let bar_width: i32 = 10;
 
         loop {
-            graphics.clear_all();
+            let color = color_sub.try_get().unwrap_or(Rgb888::CSS_PURPLE);
 
-            let elapsed_millis = start_time.elapsed().as_millis() as f32;
+            {
+                let mut pixels = self.graphics_buffer.pixels_mut().await;
+                pixels.clear_all();
 
-            let progress = (elapsed_millis / ANIMATION_DURATION).min(1.0);
-
-            // left circle
-            let eased_progress = Self::ease_in(progress);
-            let animated_value = Self::lerp(min_value, max_value, eased_progress);
-            Circle::new(Point::new(10, animated_value.floor() as i32), 5)
-                .into_styled(style)
-                .draw(&mut graphics)
-                .unwrap();
-
-            // center circle
-            let animated_value = Self::lerp(min_value, max_value, progress);
-            Circle::new(Point::new(24, animated_value.floor() as i32), 5)
-                .into_styled(style)
-                .draw(&mut graphics)
-                .unwrap();
-
-            // right circle
-            let eased_progress = Self::ease_out(progress);
-            let animated_value = Self::lerp(min_value, max_value, eased_progress);
-            Circle::new(Point::new(38, animated_value.floor() as i32), 5)
-                .into_styled(style)
-                .draw(&mut graphics)
-                .unwrap();
-
-            DisplayGraphicsMessage::from_app(graphics.get_pixels(), Duration::from_millis(10))
-                .send_and_replace_queue()
-                .await;
-
-            Timer::after_millis(10).await;
-
-            if elapsed_millis >= ANIMATION_DURATION {
-                Timer::after_millis(25).await;
-
-                start_time = Instant::now();
-
-                if max_value == MAX_POSITION {
-                    max_value = 0.0;
-                    min_value = MAX_POSITION + 0.1; // 0.1 stops jitter on reverse animation
-                } else {
-                    max_value = MAX_POSITION;
-                    min_value = 0.0;
+                // Draw a moving bar animation
+                for x in 0..bar_width {
+                    let draw_x = (position + x) % (WIDTH as i32 + bar_width);
+                    if draw_x >= 0 && draw_x < WIDTH as i32 {
+                        for y in 0..HEIGHT as i32 {
+                            // Fade effect based on position in bar
+                            let intensity = ((bar_width - x) as f32 / bar_width as f32 * 255.0) as u8;
+                            let fade_color = Rgb888::new(
+                                (color.r() as u16 * intensity as u16 / 255) as u8,
+                                (color.g() as u16 * intensity as u16 / 255) as u8,
+                                (color.b() as u16 * intensity as u16 / 255) as u8,
+                            );
+                            pixels.set_pixel(Point::new(draw_x, y), fade_color);
+                        }
+                    }
                 }
             }
+
+            self.graphics_buffer.send();
+
+            position = (position + 1) % (WIDTH as i32 + bar_width);
+            Timer::after_millis(30).await;
         }
     }
 
-    async fn start(&self) {}
-
-    async fn stop(&self) {}
-
-    async fn button_press(&self, _: ButtonPress) {}
-
-    async fn process_mqtt_message(&self, _: MqttReceiveMessage) {}
-
-    async fn send_mqtt_state(&self) {}
+    fn release_writer(self) -> GraphicsBufferWriter {
+        self.graphics_buffer
+    }
 }

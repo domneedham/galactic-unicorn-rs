@@ -1,14 +1,12 @@
 use embassy_net::tcp::TcpSocket;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
 use embassy_time::{Duration, Timer};
-use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::{geometry::Point, pixelcolor::Rgb888};
 use static_cell::make_static;
 
 use crate::{
-    app::{AppNotificationPolicy, AppRunner, UnicornApp, UnicornAppRunner},
-    buttons::ButtonPress,
+    app::{AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
     display::{DisplayState, GraphicsBufferWriter},
-    mqtt::MqttReceiveMessage,
     network::{get_network_stack, NetworkState},
     system::SystemState,
 };
@@ -38,38 +36,44 @@ impl DrawApp {
 }
 
 impl UnicornApp for DrawApp {
-    async fn create_runner<'a>(
-        &self,
-        graphics_buffer: GraphicsBufferWriter<'a>,
+    async fn create_runner(
+        &'static self,
+        graphics_buffer: GraphicsBufferWriter,
+        inbox: AppRunnerInboxSubscribers,
         notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
-    ) -> AppRunner<'a> {
+    ) -> AppRunner {
         AppRunner::Draw(DrawAppRunner::new(
             graphics_buffer,
             self.display_state,
             self.system_state,
+            inbox,
             notification_policy,
         ))
     }
 }
 
-pub struct DrawAppRunner<'a> {
-    pub graphics_buffer: GraphicsBufferWriter<'a>,
+pub struct DrawAppRunner {
+    pub graphics_buffer: GraphicsBufferWriter,
     pub display_state: &'static DisplayState,
     pub system_state: &'static SystemState,
+    #[allow(dead_code)]
+    pub inbox: AppRunnerInboxSubscribers,
     pub notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
-impl<'a> DrawAppRunner<'a> {
+impl<'a> DrawAppRunner {
     pub fn new(
-        graphics_buffer: GraphicsBufferWriter<'a>,
+        graphics_buffer: GraphicsBufferWriter,
         display_state: &'static DisplayState,
         system_state: &'static SystemState,
+        inbox: AppRunnerInboxSubscribers,
         notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> Self {
         Self {
             graphics_buffer,
             display_state,
             system_state,
+            inbox,
             notification_policy,
         }
     }
@@ -112,49 +116,58 @@ impl<'a> DrawAppRunner<'a> {
     }
 
     async fn parse_command(&mut self, data: &[u8]) -> Result<(), &'static str> {
-        if data.len() < 1 {
-            return Err("Empty command");
+        if data.len() < 2 {
+            return Err("Command too short");
         }
 
         const VERSION_1: u8 = 0x01;
 
-        // version 1
-        if data[0] == VERSION_1 {
-            const CMD_CLEAR: u8 = 0x00;
-            const CMD_SET_PIXEL: u8 = 0x01;
-
-            return match data[1] {
-                CMD_CLEAR => {
-                    // clear
-                    self.graphics_buffer.clear().await;
-                    Ok(())
-                }
-                CMD_SET_PIXEL => {
-                    // set pixel
-                    if data.len() != 7 {
-                        return Err("PXL requires 6 bytes");
-                    }
-
-                    let x = data[2] as usize;
-                    let y = data[3] as usize;
-                    let r = data[4];
-                    let g = data[5];
-                    let b = data[6];
-
-                    self.graphics_buffer
-                        .set_pixel(x as i32, y as i32, Rgb888::new(r, g, b))
-                        .await;
-                    Ok(())
-                }
-                _ => Err("Unknown command"),
-            };
+        if data[0] != VERSION_1 {
+            return Err("Unknown version");
         }
 
-        return Err("Unknown version");
+        const CMD_CLEAR: u8 = 0x00;
+        const CMD_SET_PIXEL: u8 = 0x01;
+
+        match data[1] {
+            CMD_CLEAR => {
+                // Clear and render
+                self.graphics_buffer.clear().await;
+                Ok(())
+            }
+            CMD_SET_PIXEL => {
+                // Process ALL pixel commands in this buffer with ONE mutex lock
+                let mut offset = 0;
+                let mut pixels = self.graphics_buffer.pixels_mut().await;
+
+                while offset + 7 <= data.len() {
+                    if data[offset] != VERSION_1 || data[offset + 1] != CMD_SET_PIXEL {
+                        break;
+                    }
+
+                    let x = data[offset + 2] as i32;
+                    let y = data[offset + 3] as i32;
+                    let r = data[offset + 4];
+                    let g = data[offset + 5];
+                    let b = data[offset + 6];
+
+                    pixels.set_pixel(Point::new(x, y), Rgb888::new(r, g, b));
+                    offset += 7;
+                }
+
+                // Drop the mutex lock before signaling
+                drop(pixels);
+
+                // Signal render once for all pixels
+                self.graphics_buffer.send();
+                Ok(())
+            }
+            _ => Err("Unknown command"),
+        }
     }
 }
 
-impl<'a> UnicornAppRunner<'a> for DrawAppRunner<'a> {
+impl UnicornAppRunner for DrawAppRunner {
     async fn run(&mut self) -> ! {
         loop {
             let network_state = self.system_state.get_network_state().await;
@@ -187,7 +200,7 @@ impl<'a> UnicornAppRunner<'a> for DrawAppRunner<'a> {
                             "Waiting for connection",
                             None,
                             None,
-                            Some(Duration::from_secs(1)),
+                            Some(Duration::from_millis(100)),
                             self.display_state,
                         )
                         .await;
@@ -218,7 +231,7 @@ impl<'a> UnicornAppRunner<'a> for DrawAppRunner<'a> {
         }
     }
 
-    fn release_writer(self) -> GraphicsBufferWriter<'a> {
+    fn release_writer(self) -> GraphicsBufferWriter {
         self.graphics_buffer
     }
 }

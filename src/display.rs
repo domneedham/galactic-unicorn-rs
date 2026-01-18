@@ -41,9 +41,9 @@ impl DisplayState {
         let color = Watch::new();
         let auto_brightness = Watch::new();
 
-        brightness.sender().send(255);
+        brightness.sender().send(128);
         color.sender().send(Rgb888::CSS_PURPLE);
-        auto_brightness.sender().send(true);
+        auto_brightness.sender().send(false);
 
         make_static!(Self {
             brightness,
@@ -55,72 +55,82 @@ impl DisplayState {
 
 // --- 2. Graphics Buffers (The Canvases) ---
 pub struct GraphicsBuffer {
-    pixels: UnicornGraphics<WIDTH, HEIGHT>,
-    buffer_change_signal: &'static Signal<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+    pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+    buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
 }
 
 impl GraphicsBuffer {
     pub const fn new(
-        buffer_change_signal: &'static Signal<
-            CriticalSectionRawMutex,
-            UnicornGraphics<WIDTH, HEIGHT>,
-        >,
+        pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+        buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
     ) -> Self {
         Self {
-            pixels: UnicornGraphics::<WIDTH, HEIGHT>::new(),
+            pixels,
             buffer_change_signal,
         }
     }
 
     pub fn reader(&self) -> GraphicsBufferReader {
-        GraphicsBufferReader::new(&self.pixels, self.buffer_change_signal)
+        GraphicsBufferReader::new(self.pixels, self.buffer_change_signal)
     }
 
-    pub fn writer(&mut self) -> GraphicsBufferWriter<'_> {
-        GraphicsBufferWriter::new(&mut self.pixels, self.buffer_change_signal)
+    pub fn writer(&self) -> GraphicsBufferWriter {
+        GraphicsBufferWriter::new(self.pixels, self.buffer_change_signal)
     }
 }
 
-pub struct GraphicsBufferReader<'a> {
-    latest_value: &'a UnicornGraphics<WIDTH, HEIGHT>,
-    buffer_change_signal: &'static Signal<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+pub struct GraphicsBufferReader {
+    pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+    buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
 }
 
-impl<'a> GraphicsBufferReader<'a> {
+impl GraphicsBufferReader {
     pub const fn new(
-        latest_value: &'a UnicornGraphics<WIDTH, HEIGHT>,
-        buffer_change_signal: &'static Signal<
-            CriticalSectionRawMutex,
-            UnicornGraphics<WIDTH, HEIGHT>,
-        >,
+        pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+        buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
     ) -> Self {
         GraphicsBufferReader {
-            latest_value,
+            pixels,
             buffer_change_signal,
         }
     }
 
-    pub fn get(&self) -> &UnicornGraphics<WIDTH, HEIGHT> {
-        self.latest_value
+    /// Get a copy of the current buffer contents
+    pub async fn get(&self) -> UnicornGraphics<WIDTH, HEIGHT> {
+        *self.pixels.lock().await
     }
 
+    /// Wait for the buffer to be updated, then return a copy
     pub async fn wait_for_update(&self) -> UnicornGraphics<WIDTH, HEIGHT> {
-        self.buffer_change_signal.wait().await
+        self.buffer_change_signal.wait().await;
+        *self.pixels.lock().await
+    }
+
+    /// Get read-only access to the buffer. The lock is held for the duration of the guard.
+    ///
+    /// # Performance
+    /// Use this when you need direct access without copying the buffer.
+    /// The mutex will be locked until the returned guard is dropped.
+    pub async fn lock(&self) -> impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
+        self.pixels.lock().await
+    }
+
+    /// Wait for an update signal, then get read-only access to the buffer.
+    pub async fn wait_and_lock(&self) -> impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
+        self.buffer_change_signal.wait().await;
+        self.pixels.lock().await
     }
 }
 
-pub struct GraphicsBufferWriter<'a> {
-    pixels: &'a mut UnicornGraphics<WIDTH, HEIGHT>,
-    buffer_change_signal: &'static Signal<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+pub struct GraphicsBufferWriter {
+    pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+    buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
 }
 
-impl<'a> GraphicsBufferWriter<'a> {
+impl GraphicsBufferWriter {
     pub const fn new(
-        pixels: &'a mut UnicornGraphics<WIDTH, HEIGHT>,
-        buffer_change_signal: &'static Signal<
-            CriticalSectionRawMutex,
-            UnicornGraphics<WIDTH, HEIGHT>,
-        >,
+        pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+        buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
     ) -> Self {
         GraphicsBufferWriter {
             pixels,
@@ -128,24 +138,42 @@ impl<'a> GraphicsBufferWriter<'a> {
         }
     }
 
-    fn send(&self) {
-        self.buffer_change_signal.signal(*self.pixels);
+    /// Get mutable access to the underlying graphics buffer for direct drawing.
+    /// Locks the buffer, so keep the scope short!
+    pub async fn pixels_mut(&self) -> impl core::ops::DerefMut<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
+        self.pixels.lock().await
     }
 
-    pub async fn clear(&mut self) {
-        self.pixels.clear_all();
+    /// Signal that the buffer has been updated and should be rendered.
+    pub fn send(&self) {
+        self.buffer_change_signal.signal(());
+    }
+
+    pub async fn clear(&self) {
+        self.pixels.lock().await.clear_all();
         self.send();
     }
 
-    pub async fn set_pixel(&mut self, x: i32, y: i32, color: Rgb888) {
+    /// Set a single pixel.
+    ///
+    /// # Performance Warning
+    /// This acquires and releases the mutex for each pixel. For bulk operations,
+    /// use `pixels_mut()` to get the buffer and set multiple pixels in one lock:
+    /// ```
+    /// let mut pixels = writer.pixels_mut().await;
+    /// pixels.set_pixel(Point::new(x1, y1), color1);
+    /// pixels.set_pixel(Point::new(x2, y2), color2);
+    /// drop(pixels);
+    /// writer.send();
+    /// ```
+    pub async fn set_pixel(&self, x: i32, y: i32, color: Rgb888) {
         let point = Point::new(x, y);
-        self.pixels.set_pixel(point, color);
-
+        self.pixels.lock().await.set_pixel(point, color);
         self.send();
     }
 
     pub async fn display_text(
-        &mut self,
+        &self,
         msg: &str,
         speed: Option<Duration>,
         color_override: Option<Rgb888>,
@@ -168,12 +196,15 @@ impl<'a> GraphicsBufferWriter<'a> {
                 let mut style = MonoTextStyle::new(&FONT_6X10, current_color);
                 style.text_color = Some(current_color);
 
-                self.pixels.fill(Rgb888::new(5, 5, 5)); // Match your original background
+                {
+                    let mut pixels = self.pixels.lock().await;
+                    pixels.fill(Rgb888::new(5, 5, 5)); // Match your original background
 
-                let mut text = Text::new(msg, Point::new((WIDTH / 2) as i32, 5), style);
-                text.text_style.alignment = Alignment::Center;
-                text.text_style.baseline = Baseline::Middle;
-                let _ = text.draw(self.pixels);
+                    let mut text = Text::new(msg, Point::new((WIDTH / 2) as i32, 5), style);
+                    text.text_style.alignment = Alignment::Center;
+                    text.text_style.baseline = Baseline::Middle;
+                    let _ = text.draw(&mut *pixels);
+                }
                 self.send();
 
                 // Check if we've shown it long enough or if cancelled
@@ -192,12 +223,13 @@ impl<'a> GraphicsBufferWriter<'a> {
                 };
                 let style = MonoTextStyle::new(&FONT_6X10, current_color);
 
-                // Data logic: Held for the shortest time possible
-
-                self.pixels.clear_all();
-                let mut text = Text::new(msg, Point::new(x, 5), style);
-                text.text_style.baseline = Baseline::Middle;
-                let _ = text.draw(self.pixels);
+                {
+                    let mut pixels = self.pixels.lock().await;
+                    pixels.clear_all();
+                    let mut text = Text::new(msg, Point::new(x, 5), style);
+                    text.text_style.baseline = Baseline::Middle;
+                    let _ = text.draw(&mut *pixels);
+                }
                 self.send();
 
                 Timer::after(speed).await;
@@ -254,14 +286,59 @@ pub async fn auto_brightness_task(display: &'static Display, state: &'static Dis
     loop {
         if enabled_sub.get().await {
             let lux = display.get_light_level().await;
-            // Map 0-0xFFFF lux to 0-255 brightness (simplified logic)
-            let brightness = (lux >> 8) as u8;
+            // Map 0-0xFFFF lux to 32-255 brightness with a minimum threshold
+            // This ensures the display is never completely dark
+            let brightness = ((lux >> 8) as u8).max(32);
             state.brightness.sender().send(brightness);
         }
 
         // Wait for setting change OR periodic check
         match embassy_futures::select::select(enabled_sub.changed(), Timer::after_secs(2)).await {
             _ => {}
+        }
+    }
+}
+
+// --- MQTT Message Processing Task ---
+// This task processes incoming MQTT messages for display settings
+
+#[embassy_executor::task]
+pub async fn process_mqtt_messages_task(
+    state: &'static DisplayState,
+    mut mqtt_sub: embassy_sync::pubsub::Subscriber<
+        'static,
+        embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
+        crate::mqtt::MqttReceiveMessage,
+        8,
+        1,
+        1,
+    >,
+) {
+    use crate::mqtt::topics::{AUTO_BRIGHTNESS_SET_TOPIC, BRIGHTNESS_SET_TOPIC, RGB_SET_TOPIC};
+    use core::str::FromStr;
+
+    loop {
+        let message = mqtt_sub.next_message_pure().await;
+
+        if message.topic == BRIGHTNESS_SET_TOPIC {
+            if let Ok(brightness) = u8::from_str(&message.body) {
+                state.brightness.sender().send(brightness);
+            }
+        } else if message.topic == RGB_SET_TOPIC {
+            // Parse "R,G,B" format
+            let parts: heapless::Vec<&str, 3> = message.body.split(',').collect();
+            if parts.len() == 3 {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    u8::from_str(parts[0]),
+                    u8::from_str(parts[1]),
+                    u8::from_str(parts[2]),
+                ) {
+                    state.color.sender().send(Rgb888::new(r, g, b));
+                }
+            }
+        } else if message.topic == AUTO_BRIGHTNESS_SET_TOPIC {
+            let enabled = message.body.as_str() == "ON" || message.body.as_str() == "on";
+            state.auto_brightness.sender().send(enabled);
         }
     }
 }

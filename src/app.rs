@@ -4,31 +4,29 @@ use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::mutex::Mutex;
-use embassy_sync::pubsub::{PubSubChannel, Publisher, Subscriber};
+use embassy_sync::pubsub::{PubSubChannel, Subscriber};
 use embassy_sync::signal::Signal;
 
 use embassy_sync::watch::Watch;
 use galactic_unicorn_embassy::buttons::UnicornButtons;
-use galactic_unicorn_embassy::{HEIGHT, WIDTH};
-use static_cell::make_static;
+use static_cell::{make_static, StaticCell};
 use strum_macros::{EnumString, IntoStaticStr};
-use unicorn_graphics::UnicornGraphics;
 
 use crate::buttons::ButtonPress;
-use crate::clock_app::ClockApp;
+use crate::clock_app::{ClockAppRunner, ClockAppState};
 use crate::display::{
     Display, DisplayState, GraphicsBuffer, GraphicsBufferReader, GraphicsBufferWriter,
 };
 use crate::draw_app::{DrawApp, DrawAppRunner};
-use crate::effects_app::EffectsApp;
+use crate::effects_app::{EffectsApp, EffectsAppRunner};
 use crate::mqtt::topics::APP_STATE_TOPIC;
 use crate::mqtt::{
     topics::{APP_SET_TOPIC, CLOCK_APP_SET_TOPIC, TEXT_SET_TOPIC},
     MqttMessage, MqttReceiveMessage,
 };
-use crate::mqtt_app::MqttApp;
+use crate::mqtt_app::{MqttApp, MqttAppRunner};
 use crate::system::SystemState;
-use crate::system_app::SystemApp;
+use crate::system_app::{SystemApp, SystemAppRunner};
 
 // Signal to tell hardware which buffer to render
 #[derive(Clone, Copy, PartialEq)]
@@ -63,49 +61,58 @@ pub struct AppRunnerInboxSubscribers {
     pub mqtt: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
 }
 
-pub struct AppRunnerInboxPublishers {
-    pub buttons: Publisher<'static, ThreadModeRawMutex, ButtonPress, 4, 1, 1>,
-    pub mqtt: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
-}
-
 #[derive(Clone, Copy, PartialEq)]
 pub enum AppNotificationPolicy {
     AllowAll,
     DenyNormal, // Only Critical allowed
+    #[allow(dead_code)]
     DenyAll,    // Queue everything
 }
 
-pub enum AppRunner<'a> {
-    Draw(DrawAppRunner<'a>),
+pub enum AppRunner {
+    System(SystemAppRunner),
+    Clock(ClockAppRunner),
+    Effects(EffectsAppRunner),
+    Mqtt(MqttAppRunner),
+    Draw(DrawAppRunner),
 }
 
-impl<'a> AppRunner<'a> {
+impl AppRunner {
     pub async fn run(&mut self) {
         match self {
-            AppRunner::Draw(draw_app_runner) => draw_app_runner.run().await,
+            AppRunner::System(runner) => runner.run().await,
+            AppRunner::Clock(runner) => runner.run().await,
+            AppRunner::Effects(runner) => runner.run().await,
+            AppRunner::Mqtt(runner) => runner.run().await,
+            AppRunner::Draw(runner) => runner.run().await,
         }
     }
 
-    pub fn release_writer(self) -> GraphicsBufferWriter<'a> {
+    pub fn release_writer(self) -> GraphicsBufferWriter {
         match self {
-            AppRunner::Draw(draw_app_runner) => draw_app_runner.release_writer(),
+            AppRunner::System(runner) => runner.release_writer(),
+            AppRunner::Clock(runner) => runner.release_writer(),
+            AppRunner::Effects(runner) => runner.release_writer(),
+            AppRunner::Mqtt(runner) => runner.release_writer(),
+            AppRunner::Draw(runner) => runner.release_writer(),
         }
     }
 }
 
 pub trait UnicornApp {
     /// Create an app runner.
-    async fn create_runner<'a>(
-        &self,
-        graphics_buffer: GraphicsBufferWriter<'a>,
+    async fn create_runner(
+        &'static self,
+        graphics_buffer: GraphicsBufferWriter,
+        inbox: AppRunnerInboxSubscribers,
         notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
-    ) -> AppRunner<'a>;
+    ) -> AppRunner;
 }
 
-pub trait UnicornAppRunner<'a> {
+pub trait UnicornAppRunner {
     async fn run(&mut self) -> !;
 
-    fn release_writer(self) -> GraphicsBufferWriter<'a>;
+    fn release_writer(self) -> GraphicsBufferWriter;
 }
 
 static CHANGE_APP_SIGNAL: Signal<ThreadModeRawMutex, Apps> = Signal::new();
@@ -118,12 +125,6 @@ pub struct AppController {
     /// The current active app.
     active_app: Mutex<ThreadModeRawMutex, Apps>,
 
-    /// Graphics buffer for the app to draw into.
-    app_graphics: GraphicsBuffer,
-
-    /// Graphics buffer for notifications.
-    notification_graphics: GraphicsBuffer,
-
     /// Display reference.
     display: &'static Display,
 
@@ -133,8 +134,8 @@ pub struct AppController {
     /// System app.
     system_app: &'static SystemApp,
 
-    /// Clock app.
-    clock_app: &'static ClockApp,
+    /// Clock app state.
+    clock_app: &'static ClockAppState,
 
     /// Effects app.
     effects_app: &'static EffectsApp,
@@ -151,17 +152,27 @@ pub struct AppController {
     /// Embassy spawner.
     spawner: Spawner,
 
-    // The Baton
-    graphics_writer: Option<GraphicsBufferWriter<'static>>,
+    // The Baton - the graphics writer passed between app runners
+    // Wrapped in Mutex for interior mutability since AppController is &'static
+    graphics_writer: Mutex<ThreadModeRawMutex, Option<GraphicsBufferWriter>>,
 
-    // Inputs
-    btn_rx: Subscriber<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
-    mqtt_rx: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
+    // Notification graphics writer (for overlay messages)
+    notification_writer: Mutex<ThreadModeRawMutex, GraphicsBufferWriter>,
+
+    // Inputs - wrapped in Mutex for interior mutability
+    btn_rx: Mutex<
+        ThreadModeRawMutex,
+        Subscriber<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
+    >,
+    mqtt_rx: Mutex<
+        ThreadModeRawMutex,
+        Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
+    >,
 
     // App-Side Channels (Bridge)
     // These act as the internal pipes to the current runner
-    app_btn_chan: PubSubChannel<ThreadModeRawMutex, ButtonPress, 4, 1, 1>,
-    app_mqtt_chan: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
+    app_btn_chan: &'static PubSubChannel<ThreadModeRawMutex, ButtonPress, 4, 1, 1>,
+    app_mqtt_chan: &'static PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
 }
 
 impl AppController {
@@ -171,28 +182,49 @@ impl AppController {
         display: &'static Display,
         display_state: &'static DisplayState,
         system_app: &'static SystemApp,
-        clock_app: &'static ClockApp,
+        clock_app: &'static ClockAppState,
         effects_app: &'static EffectsApp,
         mqtt_app: &'static MqttApp,
         draw_app: &'static DrawApp,
         system_state: &'static SystemState,
+        btn_rx: Subscriber<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
+        mqtt_rx: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         spawner: Spawner,
     ) -> &'static Self {
-        static APP_GRAPHICS_SIGNAL: Signal<
-            CriticalSectionRawMutex,
-            UnicornGraphics<WIDTH, HEIGHT>,
-        > = Signal::new();
-        static NOTIFICATION_GRAPHICS_SIGNAL: Signal<
-            CriticalSectionRawMutex,
-            UnicornGraphics<WIDTH, HEIGHT>,
-        > = Signal::new();
-        let app_graphics = GraphicsBuffer::new(&APP_GRAPHICS_SIGNAL);
-        let notification_graphics = GraphicsBuffer::new(&NOTIFICATION_GRAPHICS_SIGNAL);
+        // Signals for graphics buffer updates (just notifications, not data)
+        static APP_GRAPHICS_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+        static NOTIFICATION_GRAPHICS_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+        // Shared pixel buffers (Mutex-protected)
+        use unicorn_graphics::UnicornGraphics;
+        static APP_PIXELS: Mutex<CriticalSectionRawMutex, UnicornGraphics<53, 11>> =
+            Mutex::new(UnicornGraphics::new());
+        static NOTIFICATION_PIXELS: Mutex<CriticalSectionRawMutex, UnicornGraphics<53, 11>> =
+            Mutex::new(UnicornGraphics::new());
+
+        // App-side channels for forwarding events to current runner
+        static APP_BTN_CHAN: PubSubChannel<ThreadModeRawMutex, ButtonPress, 4, 1, 1> =
+            PubSubChannel::new();
+        static APP_MQTT_CHAN: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
+            PubSubChannel::new();
+
+        // Create graphics buffers as statics so we can get 'static writers
+        static APP_GRAPHICS: StaticCell<GraphicsBuffer> = StaticCell::new();
+        static NOTIFICATION_GRAPHICS: StaticCell<GraphicsBuffer> = StaticCell::new();
+
+        // Initialize graphics buffers with shared mutex access
+        let app_graphics = APP_GRAPHICS.init(GraphicsBuffer::new(&APP_PIXELS, &APP_GRAPHICS_SIGNAL));
+        let notification_graphics =
+            NOTIFICATION_GRAPHICS.init(GraphicsBuffer::new(&NOTIFICATION_PIXELS, &NOTIFICATION_GRAPHICS_SIGNAL));
+
+        // Get readers and writers (both access the same underlying mutex)
+        let app_reader = app_graphics.reader();
+        let notification_reader = notification_graphics.reader();
+        let app_writer = app_graphics.writer();
+        let notification_writer = notification_graphics.writer();
 
         let controller = Self {
-            active_app: Mutex::new(Apps::System),
-            app_graphics,
-            notification_graphics,
+            active_app: Mutex::new(Apps::Clock),
             display,
             display_state,
             system_app,
@@ -202,45 +234,72 @@ impl AppController {
             draw_app,
             system_state,
             spawner,
-            graphics_writer: todo!(),
-            btn_rx: todo!(),
-            mqtt_rx: todo!(),
-            app_btn_chan: todo!(),
-            app_mqtt_chan: todo!(),
+            graphics_writer: Mutex::new(Some(app_writer)),
+            notification_writer: Mutex::new(notification_writer),
+            btn_rx: Mutex::new(btn_rx),
+            mqtt_rx: Mutex::new(mqtt_rx),
+            app_btn_chan: &APP_BTN_CHAN,
+            app_mqtt_chan: &APP_MQTT_CHAN,
         };
 
         let controller = make_static!(controller);
+
+        // Initialize ACTIVE_LAYER so render_task doesn't block waiting for a value
+        ACTIVE_LAYER.sender().send(DisplayLayer::App);
 
         spawner
             .spawn(render_task(
                 controller.display,
                 controller.display_state,
-                controller.app_graphics.reader(),
-                controller.notification_graphics.reader(),
+                app_reader,
+                notification_reader,
             ))
             .unwrap();
 
         controller
     }
 
-    pub async fn run(&mut self) -> ! {
+    pub async fn run(&self) -> ! {
         loop {
-            // 1. Prepare handles for the Draw app
-            let writer = self.graphics_writer.take().unwrap();
+            let writer = self.graphics_writer.lock().await.take().unwrap();
+            let btn_sub = self.app_btn_chan.subscriber().unwrap();
+            let mqtt_sub = self.app_mqtt_chan.subscriber().unwrap();
             let inbox = AppRunnerInboxSubscribers {
-                buttons: self.app_btn_chan.subscriber().unwrap(),
-                mqtt: self.app_mqtt_chan.subscriber().unwrap(),
+                buttons: btn_sub,
+                mqtt: mqtt_sub,
             };
 
-            let runner = match *self.active_app.lock().await {
-                Apps::Draw => self.draw_app.create_runner(writer, Signal::new()).await,
-                Apps::Clock => self.clock_app.create_runner(writer, Signal::new()).await,
-                _ => panic!("AppController run called but active app is not Draw"),
+            let mut runner = match *self.active_app.lock().await {
+                Apps::System => {
+                    self.system_app
+                        .create_runner(writer, inbox, Signal::new())
+                        .await
+                }
+                Apps::Clock => {
+                    self.clock_app
+                        .create_runner(writer, inbox, Signal::new())
+                        .await
+                }
+                Apps::Effects => {
+                    self.effects_app
+                        .create_runner(writer, inbox, Signal::new())
+                        .await
+                }
+                Apps::Mqtt => {
+                    self.mqtt_app
+                        .create_runner(writer, inbox, Signal::new())
+                        .await
+                }
+                Apps::Draw => {
+                    self.draw_app
+                        .create_runner(writer, inbox, Signal::new())
+                        .await
+                }
             };
 
             // 2. Drive the App and the Forwarder
             // If forward_and_intercept returns SwitchApp, the whole select finishes
-            embassy_futures::select::select3(
+            let result = embassy_futures::select::select3(
                 runner.run(),
                 self.handle_events(),
                 CHANGE_APP_SIGNAL.wait(),
@@ -249,22 +308,29 @@ impl AppController {
 
             // 3. App Switch triggered: Recover the writer from the runner
             // Because DrawAppRunner is dropped here, all its futures stop
-            self.graphics_writer = Some(runner.release_writer());
+            *self.graphics_writer.lock().await = Some(runner.release_writer());
+
+            // Update active_app if CHANGE_APP_SIGNAL fired
+            if let embassy_futures::select::Either3::Third(new_app) = result {
+                *self.active_app.lock().await = new_app;
+            }
         }
     }
 
-    async fn handle_events(&mut self) {
-        match select(
-            self.btn_rx.next_message_pure(),
-            self.mqtt_rx.next_message_pure(),
-        )
-        .await
-        {
-            Either::First((button, press)) => {
-                self.handle_button_event(button, press).await;
-            }
-            Either::Second(msg) => {
-                self.handle_mqtt_event(msg).await;
+    async fn handle_events(&self) -> ! {
+        loop {
+            match select(
+                self.btn_rx.lock().await.next_message_pure(),
+                self.mqtt_rx.lock().await.next_message_pure(),
+            )
+            .await
+            {
+                Either::First((button, press)) => {
+                    self.handle_button_event(button, press).await;
+                }
+                Either::Second(msg) => {
+                    self.handle_mqtt_event(msg).await;
+                }
             }
         }
     }
@@ -272,7 +338,24 @@ impl AppController {
     async fn handle_button_event(&self, button: UnicornButtons, press: ButtonPress) {
         let active_app = *self.active_app.lock().await;
 
-        // TODO: Handle brightness and sleep buttons here
+        // Handle brightness buttons
+        match button {
+            UnicornButtons::BrightnessUp => {
+                let mut brightness_sub = self.display_state.brightness.receiver().unwrap();
+                let current = brightness_sub.get().await;
+                let new_brightness = current.saturating_add(25).min(255);
+                self.display_state.brightness.sender().send(new_brightness);
+                return;
+            }
+            UnicornButtons::BrightnessDown => {
+                let mut brightness_sub = self.display_state.brightness.receiver().unwrap();
+                let current = brightness_sub.get().await;
+                let new_brightness = current.saturating_sub(25);
+                self.display_state.brightness.sender().send(new_brightness);
+                return;
+            }
+            _ => {}
+        }
 
         let target_app = match button {
             UnicornButtons::SwitchA => Apps::Clock,
@@ -290,13 +373,53 @@ impl AppController {
         self.app_btn_chan.publisher().unwrap().publish(press).await;
     }
 
-    async fn handle_mqtt_event(&mut self, message: MqttReceiveMessage) {
+    async fn handle_mqtt_event(&self, message: MqttReceiveMessage) {
         if message.topic == TEXT_SET_TOPIC {
-            self.notification_graphics
-                .writer()
-                .display_text(&message.body, None, None, None, self.display_state)
+            // Check if we should show notifications based on the active app
+            // Draw app denies normal notifications when actively being used
+            let active_app = *self.active_app.lock().await;
+            let should_show = match active_app {
+                Apps::Draw => {
+                    // For Draw app, only show critical notifications
+                    // Since TEXT_SET_TOPIC is considered "normal", skip it
+                    false
+                }
+                _ => true, // All other apps allow notifications
+            };
+
+            if !should_show {
+                // Store the message but don't display it
+                self.mqtt_app.set_last_message(message.body).await;
+                self.send_mqtt_states().await;
+                return;
+            }
+
+            // First, prepare the notification buffer with initial content
+            {
+                let mut writer = self.notification_writer.lock().await;
+                writer.clear().await;
+            }
+
+            // Now switch to notification layer
+            ACTIVE_LAYER.sender().send(DisplayLayer::Notification);
+
+            // Display the text (this will continuously update the notification buffer)
+            // Use a minimum duration of 2 seconds to ensure the message is visible
+            self.notification_writer
+                .lock()
+                .await
+                .display_text(
+                    &message.body,
+                    None,
+                    None,
+                    Some(embassy_time::Duration::from_secs(2)),
+                    self.display_state,
+                )
                 .await;
             self.mqtt_app.set_last_message(message.body).await;
+
+            // Switch back to app layer
+            ACTIVE_LAYER.sender().send(DisplayLayer::App);
         } else if message.topic == CLOCK_APP_SET_TOPIC {
             // self.clock_app.process_mqtt_message(message).await;
         } else if message.topic == APP_SET_TOPIC {
@@ -320,8 +443,8 @@ impl AppController {
 pub async fn render_task(
     display: &'static Display,
     state: &'static DisplayState,
-    app_buffer: GraphicsBufferReader<'static>,
-    notify_buffer: GraphicsBufferReader<'static>,
+    app_buffer: GraphicsBufferReader,
+    notify_buffer: GraphicsBufferReader,
 ) {
     let mut layer_sub = ACTIVE_LAYER.receiver().unwrap();
     let mut bright_sub = state.brightness.receiver().unwrap();
@@ -330,30 +453,48 @@ pub async fn render_task(
         let layer = layer_sub.get().await;
         let brightness = bright_sub.try_get().unwrap_or(128);
 
-        let buffer = match layer {
-            DisplayLayer::App => &app_buffer,
-            DisplayLayer::Notification => &notify_buffer,
-        };
-
         match select3(
-            buffer.wait_for_update(),
+            async {
+                match layer {
+                    DisplayLayer::App => Either::First(app_buffer.wait_and_lock().await),
+                    DisplayLayer::Notification => Either::Second(notify_buffer.wait_and_lock().await),
+                }
+            },
             layer_sub.changed(),
             bright_sub.changed(),
         )
         .await
         {
-            Either3::First(graphics) => {
-                display.update(&graphics, brightness).await;
-            }
-            Either3::Second(layer) => {
-                let buffer = match layer {
-                    DisplayLayer::App => &app_buffer,
-                    DisplayLayer::Notification => &notify_buffer,
+            Either3::First(graphics_guard) => {
+                // Hold the lock guard while updating to avoid copy
+                match graphics_guard {
+                    Either::First(ref g) => display.update(&**g, brightness).await,
+                    Either::Second(ref g) => display.update(&**g, brightness).await,
                 };
-                display.update(&buffer.get(), brightness).await;
+            }
+            Either3::Second(new_layer) => {
+                match new_layer {
+                    DisplayLayer::App => {
+                        let graphics = app_buffer.lock().await;
+                        display.update(&graphics, brightness).await;
+                    }
+                    DisplayLayer::Notification => {
+                        let graphics = notify_buffer.lock().await;
+                        display.update(&graphics, brightness).await;
+                    }
+                };
             }
             Either3::Third(new_brightness) => {
-                display.update(&buffer.get(), new_brightness).await;
+                match layer {
+                    DisplayLayer::App => {
+                        let graphics = app_buffer.lock().await;
+                        display.update(&graphics, new_brightness).await;
+                    }
+                    DisplayLayer::Notification => {
+                        let graphics = notify_buffer.lock().await;
+                        display.update(&graphics, new_brightness).await;
+                    }
+                };
             }
         };
     }
