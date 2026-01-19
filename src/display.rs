@@ -1,4 +1,5 @@
 use core::fmt::Write;
+use embassy_futures::select::{select3, Either3};
 use embassy_rp::peripherals::{ADC, DMA_CH0, PIO0, USB};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -26,6 +27,96 @@ use crate::mqtt::{
 
 pub const WIDTH: usize = 53;
 pub const HEIGHT: usize = 11;
+
+// --- 0. Dirty Rectangle Tracking ---
+
+/// Tracks the bounding rectangle of changed pixels
+#[derive(Copy, Clone, Debug)]
+pub struct DirtyRect {
+    min_x: usize,
+    min_y: usize,
+    max_x: usize,
+    max_y: usize,
+    is_dirty: bool,
+}
+
+impl DirtyRect {
+    pub const fn new() -> Self {
+        Self {
+            min_x: usize::MAX,
+            min_y: usize::MAX,
+            max_x: 0,
+            max_y: 0,
+            is_dirty: false,
+        }
+    }
+
+    /// Mark a single pixel as dirty
+    #[inline]
+    pub fn mark_pixel(&mut self, x: usize, y: usize) {
+        if !self.is_dirty {
+            self.min_x = x;
+            self.min_y = y;
+            self.max_x = x;
+            self.max_y = y;
+            self.is_dirty = true;
+        } else {
+            self.min_x = self.min_x.min(x);
+            self.min_y = self.min_y.min(y);
+            self.max_x = self.max_x.max(x);
+            self.max_y = self.max_y.max(y);
+        }
+    }
+
+    /// Mark a rectangular region as dirty
+    #[inline]
+    pub fn mark_region(&mut self, x1: usize, y1: usize, x2: usize, y2: usize) {
+        if !self.is_dirty {
+            self.min_x = x1;
+            self.min_y = y1;
+            self.max_x = x2;
+            self.max_y = y2;
+            self.is_dirty = true;
+        } else {
+            self.min_x = self.min_x.min(x1);
+            self.min_y = self.min_y.min(y1);
+            self.max_x = self.max_x.max(x2);
+            self.max_y = self.max_y.max(y2);
+        }
+    }
+
+    /// Mark the entire display as dirty
+    #[inline]
+    pub fn mark_all(&mut self, width: usize, height: usize) {
+        self.min_x = 0;
+        self.min_y = 0;
+        self.max_x = width - 1;
+        self.max_y = height - 1;
+        self.is_dirty = true;
+    }
+
+    /// Clear the dirty flag
+    #[inline]
+    pub fn clear(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Get the dirty bounds if any
+    #[inline]
+    pub fn get_bounds(&self) -> Option<(usize, usize, usize, usize)> {
+        if self.is_dirty {
+            Some((self.min_x, self.min_y, self.max_x, self.max_y))
+        } else {
+            None
+        }
+    }
+
+    /// Check if any pixels are dirty
+    #[inline]
+    pub fn is_dirty(&self) -> bool {
+        self.is_dirty
+    }
+}
 
 // --- 1. Global State (The Source of Truth) ---
 
@@ -57,53 +148,59 @@ impl DisplayState {
 pub struct GraphicsBuffer {
     pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
     buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
+    dirty_rect: &'static Mutex<CriticalSectionRawMutex, DirtyRect>,
 }
 
 impl GraphicsBuffer {
     pub const fn new(
         pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
         buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
+        dirty_rect: &'static Mutex<CriticalSectionRawMutex, DirtyRect>,
     ) -> Self {
         Self {
             pixels,
             buffer_change_signal,
+            dirty_rect,
         }
     }
 
     pub fn reader(&self) -> GraphicsBufferReader {
-        GraphicsBufferReader::new(self.pixels, self.buffer_change_signal)
+        GraphicsBufferReader::new(self.pixels, self.buffer_change_signal, self.dirty_rect)
     }
 
     pub fn writer(&self) -> GraphicsBufferWriter {
-        GraphicsBufferWriter::new(self.pixels, self.buffer_change_signal)
+        GraphicsBufferWriter::new(self.pixels, self.buffer_change_signal, self.dirty_rect)
     }
 }
 
 pub struct GraphicsBufferReader {
     pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
     buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
+    dirty_rect: &'static Mutex<CriticalSectionRawMutex, DirtyRect>,
 }
 
 impl GraphicsBufferReader {
     pub const fn new(
         pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
         buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
+        dirty_rect: &'static Mutex<CriticalSectionRawMutex, DirtyRect>,
     ) -> Self {
         GraphicsBufferReader {
             pixels,
             buffer_change_signal,
+            dirty_rect,
         }
     }
 
     /// Get a copy of the current buffer contents
     pub async fn get(&self) -> UnicornGraphics<WIDTH, HEIGHT> {
-        *self.pixels.lock().await
+        self.pixels.lock().await.clone()
     }
 
     /// Wait for the buffer to be updated, then return a copy
     pub async fn wait_for_update(&self) -> UnicornGraphics<WIDTH, HEIGHT> {
         self.buffer_change_signal.wait().await;
-        *self.pixels.lock().await
+        self.pixels.lock().await.clone()
     }
 
     /// Get read-only access to the buffer. The lock is held for the duration of the guard.
@@ -120,21 +217,32 @@ impl GraphicsBufferReader {
         self.buffer_change_signal.wait().await;
         self.pixels.lock().await
     }
+
+    /// Get dirty bounds and clear them atomically
+    pub async fn consume_dirty_bounds(&self) -> Option<(usize, usize, usize, usize)> {
+        let mut dirty = self.dirty_rect.lock().await;
+        let bounds = dirty.get_bounds();
+        dirty.clear();
+        bounds
+    }
 }
 
 pub struct GraphicsBufferWriter {
     pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
     buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
+    dirty_rect: &'static Mutex<CriticalSectionRawMutex, DirtyRect>,
 }
 
 impl GraphicsBufferWriter {
     pub const fn new(
         pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
         buffer_change_signal: &'static Signal<CriticalSectionRawMutex, ()>,
+        dirty_rect: &'static Mutex<CriticalSectionRawMutex, DirtyRect>,
     ) -> Self {
         GraphicsBufferWriter {
             pixels,
             buffer_change_signal,
+            dirty_rect,
         }
     }
 
@@ -151,6 +259,7 @@ impl GraphicsBufferWriter {
 
     pub async fn clear(&self) {
         self.pixels.lock().await.clear_all();
+        self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
         self.send();
     }
 
@@ -164,12 +273,29 @@ impl GraphicsBufferWriter {
     /// pixels.set_pixel(Point::new(x1, y1), color1);
     /// pixels.set_pixel(Point::new(x2, y2), color2);
     /// drop(pixels);
+    /// writer.dirty_rect.lock().await.mark_region(x1, y1, x2, y2);
     /// writer.send();
     /// ```
     pub async fn set_pixel(&self, x: i32, y: i32, color: Rgb888) {
         let point = Point::new(x, y);
         self.pixels.lock().await.set_pixel(point, color);
+
+        // Mark this pixel as dirty
+        if x >= 0 && x < WIDTH as i32 && y >= 0 && y < HEIGHT as i32 {
+            self.dirty_rect.lock().await.mark_pixel(x as usize, y as usize);
+        }
+
         self.send();
+    }
+
+    /// Mark a region as dirty. Use this after manually updating pixels via `pixels_mut()`.
+    pub async fn mark_dirty_region(&self, x1: usize, y1: usize, x2: usize, y2: usize) {
+        self.dirty_rect.lock().await.mark_region(x1, y1, x2, y2);
+    }
+
+    /// Mark entire display as dirty. Use this after operations that affect the whole screen.
+    pub async fn mark_all_dirty(&self) {
+        self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
     }
 
     pub async fn display_text(
@@ -205,6 +331,7 @@ impl GraphicsBufferWriter {
                     text.text_style.baseline = Baseline::Middle;
                     let _ = text.draw(&mut *pixels);
                 }
+                self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
                 self.send();
 
                 // Check if we've shown it long enough or if cancelled
@@ -230,6 +357,7 @@ impl GraphicsBufferWriter {
                     text.text_style.baseline = Baseline::Middle;
                     let _ = text.draw(&mut *pixels);
                 }
+                self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
                 self.send();
 
                 Timer::after(speed).await;
@@ -266,10 +394,22 @@ impl Display {
         })
     }
 
-    pub async fn update(&self, graphics: &UnicornGraphics<WIDTH, HEIGHT>, brightness: u8) {
+    pub async fn update(
+        &self,
+        graphics: &UnicornGraphics<WIDTH, HEIGHT>,
+        brightness: u8,
+        dirty_bounds: Option<(usize, usize, usize, usize)>,
+    ) {
         let mut hw = self.galactic_unicorn.lock().await;
-        hw.brightness = brightness;
-        hw.set_pixels(graphics);
+
+        // Check if brightness changed (requires full update)
+        if hw.brightness != brightness {
+            hw.brightness = brightness;
+            hw.set_pixels(graphics); // Full update
+        } else {
+            // Use partial update with dirty bounds
+            hw.set_pixels_partial(graphics, dirty_bounds);
+        }
     }
 
     pub async fn get_light_level(&self) -> u16 {
@@ -381,5 +521,85 @@ pub async fn state_to_mqtt_broadcast_task(state: &'static DisplayState) {
                 MqttMessage::enqueue_state(AUTO_BRIGHTNESS_STATE_TOPIC, text).await;
             }
         }
+    }
+}
+
+// --- Render Task ---
+
+#[embassy_executor::task]
+pub async fn render_task(
+    display: &'static Display,
+    state: &'static DisplayState,
+    app_buffer: GraphicsBufferReader,
+    notify_buffer: GraphicsBufferReader,
+) {
+    use embassy_futures::select::Either;
+    use crate::app::{DisplayLayer, ACTIVE_LAYER};
+
+    let mut layer_sub = ACTIVE_LAYER.receiver().unwrap();
+    let mut bright_sub = state.brightness.receiver().unwrap();
+
+    loop {
+        let layer = layer_sub.get().await;
+        let brightness = bright_sub.try_get().unwrap_or(128);
+
+        match select3(
+            async {
+                match layer {
+                    DisplayLayer::App => Either::First(app_buffer.wait_and_lock().await),
+                    DisplayLayer::Notification => Either::Second(notify_buffer.wait_and_lock().await),
+                }
+            },
+            layer_sub.changed(),
+            bright_sub.changed(),
+        )
+        .await
+        {
+            Either3::First(graphics_guard) => {
+                // Get dirty bounds from the appropriate buffer
+                let dirty_bounds = match graphics_guard {
+                    Either::First(_) => app_buffer.consume_dirty_bounds().await,
+                    Either::Second(_) => notify_buffer.consume_dirty_bounds().await,
+                };
+
+                // Hold the lock guard while updating to avoid copy
+                match graphics_guard {
+                    Either::First(ref g) => display.update(&**g, brightness, dirty_bounds).await,
+                    Either::Second(ref g) => display.update(&**g, brightness, dirty_bounds).await,
+                };
+            }
+            Either3::Second(new_layer) => {
+                // Layer changed - need to read current buffer and render
+                match new_layer {
+                    DisplayLayer::App => {
+                        let graphics = app_buffer.lock().await;
+                        let dirty_bounds = app_buffer.consume_dirty_bounds().await;
+                        display.update(&graphics, brightness, dirty_bounds).await;
+                    }
+                    DisplayLayer::Notification => {
+                        let graphics = notify_buffer.lock().await;
+                        let dirty_bounds = notify_buffer.consume_dirty_bounds().await;
+                        display.update(&graphics, brightness, dirty_bounds).await;
+                    }
+                };
+            }
+            Either3::Third(new_brightness) => {
+                // Brightness changed - forces full update regardless of dirty bounds
+                match layer {
+                    DisplayLayer::App => {
+                        let graphics = app_buffer.lock().await;
+                        // Clear dirty tracking since we're doing a full update anyway
+                        let _ = app_buffer.consume_dirty_bounds().await;
+                        display.update(&graphics, new_brightness, None).await;
+                    }
+                    DisplayLayer::Notification => {
+                        let graphics = notify_buffer.lock().await;
+                        // Clear dirty tracking since we're doing a full update anyway
+                        let _ = notify_buffer.consume_dirty_bounds().await;
+                        display.update(&graphics, new_brightness, None).await;
+                    }
+                };
+            }
+        };
     }
 }

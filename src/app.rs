@@ -1,7 +1,7 @@
 use core::str::FromStr;
 
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber};
@@ -15,7 +15,7 @@ use strum_macros::{EnumString, IntoStaticStr};
 use crate::buttons::ButtonPress;
 use crate::clock_app::{ClockAppRunner, ClockAppState};
 use crate::display::{
-    Display, DisplayState, GraphicsBuffer, GraphicsBufferReader, GraphicsBufferWriter,
+    Display, DisplayState, GraphicsBuffer, GraphicsBufferWriter,
 };
 use crate::draw_app::{DrawApp, DrawAppRunner};
 use crate::effects_app::{EffectsApp, EffectsAppRunner};
@@ -197,10 +197,17 @@ impl AppController {
 
         // Shared pixel buffers (Mutex-protected)
         use unicorn_graphics::UnicornGraphics;
+        use crate::display::DirtyRect;
         static APP_PIXELS: Mutex<CriticalSectionRawMutex, UnicornGraphics<53, 11>> =
             Mutex::new(UnicornGraphics::new());
         static NOTIFICATION_PIXELS: Mutex<CriticalSectionRawMutex, UnicornGraphics<53, 11>> =
             Mutex::new(UnicornGraphics::new());
+
+        // Dirty rectangle tracking (Mutex-protected)
+        static APP_DIRTY_RECT: Mutex<CriticalSectionRawMutex, DirtyRect> =
+            Mutex::new(DirtyRect::new());
+        static NOTIFICATION_DIRTY_RECT: Mutex<CriticalSectionRawMutex, DirtyRect> =
+            Mutex::new(DirtyRect::new());
 
         // App-side channels for forwarding events to current runner
         static APP_BTN_CHAN: PubSubChannel<ThreadModeRawMutex, ButtonPress, 4, 1, 1> =
@@ -213,9 +220,9 @@ impl AppController {
         static NOTIFICATION_GRAPHICS: StaticCell<GraphicsBuffer> = StaticCell::new();
 
         // Initialize graphics buffers with shared mutex access
-        let app_graphics = APP_GRAPHICS.init(GraphicsBuffer::new(&APP_PIXELS, &APP_GRAPHICS_SIGNAL));
+        let app_graphics = APP_GRAPHICS.init(GraphicsBuffer::new(&APP_PIXELS, &APP_GRAPHICS_SIGNAL, &APP_DIRTY_RECT));
         let notification_graphics =
-            NOTIFICATION_GRAPHICS.init(GraphicsBuffer::new(&NOTIFICATION_PIXELS, &NOTIFICATION_GRAPHICS_SIGNAL));
+            NOTIFICATION_GRAPHICS.init(GraphicsBuffer::new(&NOTIFICATION_PIXELS, &NOTIFICATION_GRAPHICS_SIGNAL, &NOTIFICATION_DIRTY_RECT));
 
         // Get readers and writers (both access the same underlying mutex)
         let app_reader = app_graphics.reader();
@@ -248,7 +255,7 @@ impl AppController {
         ACTIVE_LAYER.sender().send(DisplayLayer::App);
 
         spawner
-            .spawn(render_task(
+            .spawn(crate::display::render_task(
                 controller.display,
                 controller.display_state,
                 app_reader,
@@ -436,66 +443,5 @@ impl AppController {
         let active_app = *self.active_app.lock().await;
         let app_text = active_app.into();
         MqttMessage::enqueue_state(APP_STATE_TOPIC, app_text).await;
-    }
-}
-
-#[embassy_executor::task]
-pub async fn render_task(
-    display: &'static Display,
-    state: &'static DisplayState,
-    app_buffer: GraphicsBufferReader,
-    notify_buffer: GraphicsBufferReader,
-) {
-    let mut layer_sub = ACTIVE_LAYER.receiver().unwrap();
-    let mut bright_sub = state.brightness.receiver().unwrap();
-
-    loop {
-        let layer = layer_sub.get().await;
-        let brightness = bright_sub.try_get().unwrap_or(128);
-
-        match select3(
-            async {
-                match layer {
-                    DisplayLayer::App => Either::First(app_buffer.wait_and_lock().await),
-                    DisplayLayer::Notification => Either::Second(notify_buffer.wait_and_lock().await),
-                }
-            },
-            layer_sub.changed(),
-            bright_sub.changed(),
-        )
-        .await
-        {
-            Either3::First(graphics_guard) => {
-                // Hold the lock guard while updating to avoid copy
-                match graphics_guard {
-                    Either::First(ref g) => display.update(&**g, brightness).await,
-                    Either::Second(ref g) => display.update(&**g, brightness).await,
-                };
-            }
-            Either3::Second(new_layer) => {
-                match new_layer {
-                    DisplayLayer::App => {
-                        let graphics = app_buffer.lock().await;
-                        display.update(&graphics, brightness).await;
-                    }
-                    DisplayLayer::Notification => {
-                        let graphics = notify_buffer.lock().await;
-                        display.update(&graphics, brightness).await;
-                    }
-                };
-            }
-            Either3::Third(new_brightness) => {
-                match layer {
-                    DisplayLayer::App => {
-                        let graphics = app_buffer.lock().await;
-                        display.update(&graphics, new_brightness).await;
-                    }
-                    DisplayLayer::Notification => {
-                        let graphics = notify_buffer.lock().await;
-                        display.update(&graphics, new_brightness).await;
-                    }
-                };
-            }
-        };
     }
 }
