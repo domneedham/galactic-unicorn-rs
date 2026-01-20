@@ -146,6 +146,9 @@ impl<'a> EffectsAppRunner {
             }
         }
 
+        // Mark entire display as dirty since fire effect updates everything
+        self.graphics_buffer.mark_all_dirty().await;
+
         // Clear the bottom row and then add a new fire seed to it
         for x in 0..WIDTH {
             self.heat[x][HEIGHT] = 0.0;

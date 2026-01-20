@@ -372,27 +372,40 @@ impl UnicornAppRunner for DrawAppRunner {
 
                     log::info!("Listening on TCP:{}...", DRAW_SERVER_PORT);
 
-                    self.graphics_buffer
-                        .display_text(
-                            "Waiting for connection",
-                            None,
-                            None,
-                            Some(Duration::from_millis(100)),
-                            self.display_state,
-                        )
-                        .await;
+                    // Run scrolling text and TCP accept concurrently
+                    use embassy_futures::select::{select, Either};
 
-                    if let Err(e) = socket.accept(DRAW_SERVER_PORT).await {
-                        log::warn!("TCP accept error: {:?}", e);
-                        Timer::after(Duration::from_secs(1)).await;
-                        continue;
-                    }
+                    let scroll_future = async {
+                        loop {
+                            self.graphics_buffer
+                                .display_text(
+                                    "Waiting for connection",
+                                    None,
+                                    None,
+                                    None,
+                                    self.display_state,
+                                )
+                                .await;
+                        }
+                    };
 
-                    log::info!("Client connected");
+                    let accept_result = select(scroll_future, socket.accept(DRAW_SERVER_PORT)).await;
 
-                    match self.handle_connection(&mut socket).await {
-                        Ok(_) => log::info!("Client disconnected"),
-                        Err(e) => log::warn!("Connection error: {:?}", e),
+                    match accept_result {
+                        Either::First(_) => unreachable!(), // scroll_future never completes
+                        Either::Second(Err(e)) => {
+                            log::warn!("TCP accept error: {:?}", e);
+                            Timer::after(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                        Either::Second(Ok(())) => {
+                            log::info!("Client connected");
+
+                            match self.handle_connection(&mut socket).await {
+                                Ok(_) => log::info!("Client disconnected"),
+                                Err(e) => log::warn!("Connection error: {:?}", e),
+                            }
+                        }
                     }
                 }
                 NetworkState::Error => {
