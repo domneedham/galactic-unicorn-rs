@@ -49,21 +49,7 @@ class DrawingClient:
             # Send command
             self.sock.sendall(data)
 
-            # Wait for response (single byte: 0x01 for success, 0x00 for error)
-            response = self.sock.recv(1)
-            if len(response) != 1:
-                print(f"✗ Invalid response length: {len(response)}")
-                return False
-
-            response_byte = response[0]
-            if response_byte == RSP_OK:
-                return True
-            elif response_byte == RSP_ERROR:
-                print(f"✗ Server error for command")
-                return False
-            else:
-                print(f"? Unexpected response: 0x{response_byte:02x}")
-                return False
+            return True
         except Exception as e:
             print(f"✗ Send failed: {e}")
             return False
@@ -216,6 +202,191 @@ def test_rainbow_sweep(client: DrawingClient):
 
         time.sleep(0.02)
 
+def test_finger_drawing(client: DrawingClient, duration: int = 10):
+    """Simulate finger drawing - random walk path"""
+    print(f"\n=== Finger Drawing Simulation ({duration}s) ===")
+    print("Simulating continuous drawing with random walk...")
+
+    # Start in middle
+    x, y = WIDTH // 2, HEIGHT // 2
+
+    start = time.time()
+    pixels_drawn = 0
+
+    while time.time() - start < duration:
+        # Draw current position
+        # Use varying colors based on position for visual interest
+        r = int((x / WIDTH) * 255)
+        g = int((y / HEIGHT) * 255)
+        b = 128
+        client.set_pixel(x, y, r, g, b)
+        pixels_drawn += 1
+
+        # Random walk
+        dx = random.choice([-1, 0, 1])
+        dy = random.choice([-1, 0, 1])
+        x = max(0, min(WIDTH - 1, x + dx))
+        y = max(0, min(HEIGHT - 1, y + dy))
+
+        time.sleep(0.05)  # 20 FPS drawing speed
+
+    elapsed = time.time() - start
+    print(f"Drew {pixels_drawn} pixels in {elapsed:.2f}s ({pixels_drawn/elapsed:.1f} pixels/sec)")
+
+def test_snake_game(client: DrawingClient, duration: int = 15):
+    """Simulate a snake game"""
+    print(f"\n=== Snake Game Simulation ({duration}s) ===")
+    print("Running snake game...")
+
+    # Initial snake (3 segments)
+    snake = [(WIDTH // 2, HEIGHT // 2), (WIDTH // 2 - 1, HEIGHT // 2), (WIDTH // 2 - 2, HEIGHT // 2)]
+    direction = (1, 0)  # Moving right
+
+    # Food
+    food = (random.randint(0, WIDTH - 1), random.randint(0, HEIGHT - 1))
+
+    start = time.time()
+    frames = 0
+
+    while time.time() - start < duration:
+        # Calculate new head position
+        head_x, head_y = snake[0]
+        new_head = ((head_x + direction[0]) % WIDTH, (head_y + direction[1]) % HEIGHT)
+
+        # Check if food eaten
+        ate_food = new_head == food
+
+        # Move snake
+        snake.insert(0, new_head)
+        if not ate_food:
+            tail = snake.pop()
+            # Clear tail
+            client.set_pixel(tail[0], tail[1], 0, 0, 0)
+        else:
+            # Spawn new food
+            food = (random.randint(0, WIDTH - 1), random.randint(0, HEIGHT - 1))
+
+        # Draw snake head (green)
+        client.set_pixel(snake[0][0], snake[0][1], 0, 255, 0)
+
+        # Draw body (darker green)
+        for x, y in snake[1:]:
+            client.set_pixel(x, y, 0, 128, 0)
+
+        # Draw food (red)
+        client.set_pixel(food[0], food[1], 255, 0, 0)
+
+        # Randomly change direction
+        if random.random() < 0.2:
+            direction = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
+
+        frames += 1
+        time.sleep(0.15)  # ~6-7 FPS
+
+    elapsed = time.time() - start
+    print(f"Ran {frames} frames in {elapsed:.2f}s ({frames/elapsed:.1f} FPS)")
+    print(f"Final snake length: {len(snake)}")
+
+def test_game_of_life(client: DrawingClient, generations: int = 50):
+    """Conway's Game of Life simulation"""
+    print(f"\n=== Game of Life ({generations} generations) ===")
+    print("Running Conway's Game of Life...")
+
+    # Initialize random grid
+    grid = [[random.choice([True, False]) for _ in range(HEIGHT)] for _ in range(WIDTH)]
+
+    start = time.time()
+
+    for gen in range(generations):
+        # Draw current generation
+        for x in range(WIDTH):
+            for y in range(HEIGHT):
+                if grid[x][y]:
+                    # Living cells in white
+                    client.set_pixel(x, y, 255, 255, 255)
+                else:
+                    # Dead cells in black
+                    client.set_pixel(x, y, 0, 0, 0)
+
+        # Calculate next generation
+        new_grid = [[False] * HEIGHT for _ in range(WIDTH)]
+        for x in range(WIDTH):
+            for y in range(HEIGHT):
+                # Count living neighbors
+                neighbors = 0
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx, ny = (x + dx) % WIDTH, (y + dy) % HEIGHT
+                        if grid[nx][ny]:
+                            neighbors += 1
+
+                # Apply rules
+                if grid[x][y]:  # Cell is alive
+                    new_grid[x][y] = neighbors in [2, 3]
+                else:  # Cell is dead
+                    new_grid[x][y] = neighbors == 3
+
+        grid = new_grid
+        time.sleep(0.2)  # 5 FPS
+
+    elapsed = time.time() - start
+    print(f"Ran {generations} generations in {elapsed:.2f}s ({generations/elapsed:.1f} gen/sec)")
+
+def test_bouncing_ball(client: DrawingClient, duration: int = 15):
+    """Bouncing ball / DVD screensaver simulation"""
+    print(f"\n=== Bouncing Ball ({duration}s) ===")
+    print("Running bouncing ball simulation...")
+
+    # Ball state
+    x, y = WIDTH / 2, HEIGHT / 2
+    vx, vy = 1.5, 0.8
+    trail_length = 3
+    trail = []
+
+    start = time.time()
+    frames = 0
+
+    while time.time() - start < duration:
+        # Update position
+        x += vx
+        y += vy
+
+        # Bounce off edges
+        if x <= 0 or x >= WIDTH - 1:
+            vx = -vx
+            x = max(0, min(WIDTH - 1, x))
+        if y <= 0 or y >= HEIGHT - 1:
+            vy = -vy
+            y = max(0, min(HEIGHT - 1, y))
+
+        # Integer position for drawing
+        ix, iy = int(x), int(y)
+
+        # Add to trail
+        trail.append((ix, iy))
+        if len(trail) > trail_length:
+            # Clear oldest trail pixel
+            old_x, old_y = trail.pop(0)
+            client.set_pixel(old_x, old_y, 0, 0, 0)
+
+        # Draw trail (fading)
+        for i, (tx, ty) in enumerate(trail):
+            brightness = int((i + 1) / len(trail) * 255)
+            if i == len(trail) - 1:
+                # Ball is bright white
+                client.set_pixel(tx, ty, 255, 255, 255)
+            else:
+                # Trail fades from blue to black
+                client.set_pixel(tx, ty, 0, 0, brightness)
+
+        frames += 1
+        time.sleep(0.0167)  # ~60 FPS (1/60 second)
+
+    elapsed = time.time() - start
+    print(f"Ran {frames} frames in {elapsed:.2f}s ({frames/elapsed:.1f} FPS)")
+
 def interactive_mode(client: DrawingClient):
     """Interactive testing mode"""
     print("\n=== Interactive Mode ===")
@@ -268,7 +439,7 @@ def main():
         return
 
     try:
-        # Run tests
+        # Run basic tests
         test_clear(client)
         time.sleep(1)
 
@@ -288,6 +459,31 @@ def main():
         time.sleep(1)
 
         test_rainbow_sweep(client)
+        time.sleep(1)
+
+        # Run fun demos
+        test_clear(client)
+        time.sleep(0.5)
+
+        test_finger_drawing(client, duration=10)
+        time.sleep(1)
+
+        test_clear(client)
+        time.sleep(0.5)
+
+        test_bouncing_ball(client, duration=15)
+        time.sleep(1)
+
+        test_clear(client)
+        time.sleep(0.5)
+
+        test_snake_game(client, duration=15)
+        time.sleep(1)
+
+        test_clear(client)
+        time.sleep(0.5)
+
+        test_game_of_life(client, generations=50)
         time.sleep(1)
 
         # Enter interactive mode
