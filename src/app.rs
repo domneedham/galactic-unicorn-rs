@@ -382,25 +382,33 @@ impl AppController {
 
     async fn handle_mqtt_event(&self, message: MqttReceiveMessage) {
         if message.topic == TEXT_SET_TOPIC {
-            // Check if we should show notifications based on the active app
-            // Draw app denies normal notifications when actively being used
             let active_app = *self.active_app.lock().await;
+
+            // If MQTT app is active, just update the message directly
+            // The MQTT app will display it on its own layer
+            if active_app == Apps::Mqtt {
+                self.mqtt_app.set_last_message(message.body).await;
+                self.send_mqtt_states().await;
+                return;
+            }
+
+            // For other apps, decide if we should show as notification
             let should_show = match active_app {
                 Apps::Draw => {
-                    // For Draw app, only show critical notifications
-                    // Since TEXT_SET_TOPIC is considered "normal", skip it
+                    // Draw app denies normal notifications when actively being used
                     false
                 }
                 _ => true, // All other apps allow notifications
             };
 
             if !should_show {
-                // Store the message but don't display it
+                // Store the message but don't display it as notification
                 self.mqtt_app.set_last_message(message.body).await;
                 self.send_mqtt_states().await;
                 return;
             }
 
+            // Show as notification overlay for non-MQTT apps
             // First, prepare the notification buffer with initial content
             {
                 let mut writer = self.notification_writer.lock().await;
