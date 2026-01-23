@@ -206,6 +206,37 @@ impl GraphicsBufferReader {
         self.pixels.lock().await
     }
 
+    /// Wait for an update signal, then atomically lock buffer and consume dirty bounds.
+    /// Returns (pixel buffer guard, dirty bounds).
+    pub async fn wait_and_lock_with_dirty(
+        &self,
+    ) -> (
+        impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_,
+        Option<(usize, usize, usize, usize)>,
+    ) {
+        self.buffer_change_signal.wait().await;
+        let pixels = self.pixels.lock().await;
+        let mut dirty = self.dirty_rect.lock().await;
+        let bounds = dirty.get_bounds();
+        dirty.clear();
+        (pixels, bounds)
+    }
+
+    /// Atomically lock buffer and consume dirty bounds (without waiting for signal).
+    /// Returns (pixel buffer guard, dirty bounds).
+    pub async fn lock_with_dirty(
+        &self,
+    ) -> (
+        impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_,
+        Option<(usize, usize, usize, usize)>,
+    ) {
+        let pixels = self.pixels.lock().await;
+        let mut dirty = self.dirty_rect.lock().await;
+        let bounds = dirty.get_bounds();
+        dirty.clear();
+        (pixels, bounds)
+    }
+
     /// Get dirty bounds and clear them atomically
     pub async fn consume_dirty_bounds(&self) -> Option<(usize, usize, usize, usize)> {
         let mut dirty = self.dirty_rect.lock().await;
@@ -301,7 +332,7 @@ impl GraphicsBufferWriter {
         let mut color_sub = state.color.receiver().unwrap();
         let mut x = WIDTH as i32;
         let text_width = (msg.len() * 6) as i32;
-        let speed = speed.unwrap_or(Duration::from_millis(50));
+        let speed = speed.unwrap_or(Duration::from_millis(100));
         let start_time = Instant::now();
         let min_duration = min_duration.unwrap_or(Duration::from_secs(0));
 
@@ -315,15 +346,16 @@ impl GraphicsBufferWriter {
                 style.text_color = Some(current_color);
 
                 {
-                    let mut pixels = self.pixels.lock().await;
+                    let mut pixels = self.pixels_mut().await;
                     pixels.fill(Rgb888::new(5, 5, 5)); // Match your original background
 
                     let mut text = Text::new(msg, Point::new((WIDTH / 2) as i32, 5), style);
                     text.text_style.alignment = Alignment::Center;
                     text.text_style.baseline = Baseline::Middle;
                     let _ = text.draw(&mut *pixels);
+
+                    pixels.mark_all_dirty();
                 }
-                self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
                 self.send();
 
                 // Check if we've shown it long enough or if cancelled
@@ -336,6 +368,11 @@ impl GraphicsBufferWriter {
             }
         } else {
             while x > -text_width {
+                // Wait before preparing the next frame (except first iteration)
+                if x < WIDTH as i32 {
+                    Timer::after(speed).await;
+                }
+
                 let current_color = match color_override {
                     Some(c) => c,
                     None => color_sub.get().await,
@@ -343,17 +380,17 @@ impl GraphicsBufferWriter {
                 let style = MonoTextStyle::new(&FONT_6X10, current_color);
 
                 {
-                    let mut pixels = self.pixels.lock().await;
+                    let mut pixels = self.pixels_mut().await;
                     pixels.clear_all();
                     let mut text = Text::new(msg, Point::new(x, 5), style);
                     text.text_style.baseline = Baseline::Middle;
                     let _ = text.draw(&mut *pixels);
+
+                    pixels.mark_all_dirty();
                 }
-                self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
                 self.send();
 
-                Timer::after(speed).await;
-                x -= 1;
+                x -= 2;
             }
         }
     }
@@ -399,8 +436,21 @@ impl Display {
             hw.brightness = brightness;
             hw.set_pixels(graphics); // Full update
         } else {
-            // Use partial update with dirty bounds
-            hw.set_pixels_partial(graphics, dirty_bounds);
+            // Check if dirty bounds cover entire screen or are None
+            let is_full_screen = match dirty_bounds {
+                Some((x1, y1, x2, y2)) => {
+                    x1 == 0 && y1 == 0 && x2 >= WIDTH - 1 && y2 >= HEIGHT - 1
+                }
+                None => true,
+            };
+
+            if is_full_screen {
+                // Full screen update - use set_pixels for better consistency
+                hw.set_pixels(graphics);
+            } else {
+                // Partial update
+                hw.set_pixels_partial(graphics, dirty_bounds);
+            }
         }
     }
 
@@ -538,9 +588,13 @@ pub async fn render_task(
         match select3(
             async {
                 match layer {
-                    DisplayLayer::App => Either::First(app_buffer.wait_and_lock().await),
+                    DisplayLayer::App => {
+                        let (pixels, dirty) = app_buffer.wait_and_lock_with_dirty().await;
+                        Either::First((pixels, dirty))
+                    }
                     DisplayLayer::Notification => {
-                        Either::Second(notify_buffer.wait_and_lock().await)
+                        let (pixels, dirty) = notify_buffer.wait_and_lock_with_dirty().await;
+                        Either::Second((pixels, dirty))
                     }
                 }
             },
@@ -549,30 +603,26 @@ pub async fn render_task(
         )
         .await
         {
-            Either3::First(graphics_guard) => {
-                // Get dirty bounds from the appropriate buffer
-                let dirty_bounds = match graphics_guard {
-                    Either::First(_) => app_buffer.consume_dirty_bounds().await,
-                    Either::Second(_) => notify_buffer.consume_dirty_bounds().await,
-                };
-
-                // Hold the lock guard while updating to avoid copy
-                match graphics_guard {
-                    Either::First(ref g) => display.update(&**g, brightness, dirty_bounds).await,
-                    Either::Second(ref g) => display.update(&**g, brightness, dirty_bounds).await,
+            Either3::First(result) => {
+                // Atomically got both buffer and dirty bounds
+                match result {
+                    Either::First((ref pixels, dirty_bounds)) => {
+                        display.update(&**pixels, brightness, dirty_bounds).await
+                    }
+                    Either::Second((ref pixels, dirty_bounds)) => {
+                        display.update(&**pixels, brightness, dirty_bounds).await
+                    }
                 };
             }
             Either3::Second(new_layer) => {
                 // Layer changed - need to read current buffer and render
                 match new_layer {
                     DisplayLayer::App => {
-                        let graphics = app_buffer.lock().await;
-                        let dirty_bounds = app_buffer.consume_dirty_bounds().await;
+                        let (graphics, dirty_bounds) = app_buffer.lock_with_dirty().await;
                         display.update(&graphics, brightness, dirty_bounds).await;
                     }
                     DisplayLayer::Notification => {
-                        let graphics = notify_buffer.lock().await;
-                        let dirty_bounds = notify_buffer.consume_dirty_bounds().await;
+                        let (graphics, dirty_bounds) = notify_buffer.lock_with_dirty().await;
                         display.update(&graphics, brightness, dirty_bounds).await;
                     }
                 };
@@ -581,15 +631,13 @@ pub async fn render_task(
                 // Brightness changed - forces full update regardless of dirty bounds
                 match layer {
                     DisplayLayer::App => {
-                        let graphics = app_buffer.lock().await;
-                        // Clear dirty tracking since we're doing a full update anyway
-                        let _ = app_buffer.consume_dirty_bounds().await;
+                        let (graphics, _) = app_buffer.lock_with_dirty().await;
+                        // Dirty bounds consumed but ignored since full update
                         display.update(&graphics, new_brightness, None).await;
                     }
                     DisplayLayer::Notification => {
-                        let graphics = notify_buffer.lock().await;
-                        // Clear dirty tracking since we're doing a full update anyway
-                        let _ = notify_buffer.consume_dirty_bounds().await;
+                        let (graphics, _) = notify_buffer.lock_with_dirty().await;
+                        // Dirty bounds consumed but ignored since full update
                         display.update(&graphics, new_brightness, None).await;
                     }
                 };

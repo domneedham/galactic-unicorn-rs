@@ -106,7 +106,7 @@ impl UnicornAppRunner for MqttAppRunner {
                     self.graphics_buffer
                         .display_text(
                             &msg,
-                            Some(Duration::from_millis(50)),
+                            Some(Duration::from_millis(100)),
                             None,
                             Some(Duration::from_secs(3)),
                             self.state.display_state,
