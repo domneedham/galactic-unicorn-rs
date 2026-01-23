@@ -5,7 +5,9 @@ use embedded_graphics::{geometry::Point, pixelcolor::Rgb888};
 use static_cell::make_static;
 
 use crate::{
-    app::{AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
+    app::{
+        AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner,
+    },
     display::{GraphicsBufferWriter, HEIGHT, WIDTH},
 };
 
@@ -35,9 +37,6 @@ impl Effects {
 pub struct EffectsApp {
     /// The current active effect.
     active_effect: Mutex<ThreadModeRawMutex, Effects>,
-
-    /// Signal for swapping effects on a button press.
-    swap_effect: Signal<ThreadModeRawMutex, bool>,
 }
 
 impl EffectsApp {
@@ -46,7 +45,6 @@ impl EffectsApp {
     pub fn new() -> &'static Self {
         make_static!(Self {
             active_effect: Mutex::new(Effects::Balls),
-            swap_effect: Signal::new(),
         })
     }
 
@@ -82,7 +80,6 @@ pub struct EffectsAppRunner {
     graphics_buffer: GraphicsBufferWriter,
     state: &'static EffectsApp,
     inbox: AppRunnerInboxSubscribers,
-    #[allow(dead_code)]
     notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
@@ -135,17 +132,13 @@ impl<'a> EffectsAppRunner {
 
                         // Update this pixel by averaging the below pixels
                         if x == 0 {
-                            heat[x][y] = (heat[x][y]
-                                + heat[x][y + 2]
-                                + heat[x][y + 1]
-                                + heat[x + 1][y + 1])
-                                / 4.0;
+                            heat[x][y] =
+                                (heat[x][y] + heat[x][y + 2] + heat[x][y + 1] + heat[x + 1][y + 1])
+                                    / 4.0;
                         } else if x == 52 {
-                            heat[x][y] = (heat[x][y]
-                                + heat[x][y + 2]
-                                + heat[x][y + 1]
-                                + heat[x - 1][y + 1])
-                                / 4.0;
+                            heat[x][y] =
+                                (heat[x][y] + heat[x][y + 2] + heat[x][y + 1] + heat[x - 1][y + 1])
+                                    / 4.0;
                         } else {
                             heat[x][y] = (heat[x][y]
                                 + heat[x][y + 2]
@@ -360,16 +353,16 @@ impl<'a> EffectsAppRunner {
             _ => (v, p, q),
         };
 
-        Rgb888::new(
-            (r * 255.0) as u8,
-            (g * 255.0) as u8,
-            (b * 255.0) as u8,
-        )
+        Rgb888::new((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
     }
 }
 
 impl UnicornAppRunner for EffectsAppRunner {
     async fn run(&mut self) -> ! {
+        // Signal that this app is happy to be interrupted at all times
+        self.notification_policy
+            .signal(AppNotificationPolicy::AllowAll);
+
         loop {
             let effect = self.state.get_active_effect().await;
 

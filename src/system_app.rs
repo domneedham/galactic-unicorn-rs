@@ -46,7 +46,6 @@ pub struct SystemAppRunner {
     state: &'static SystemApp,
     #[allow(dead_code)]
     inbox: AppRunnerInboxSubscribers,
-    #[allow(dead_code)]
     notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
@@ -68,6 +67,9 @@ impl<'a> SystemAppRunner {
 
 impl UnicornAppRunner for SystemAppRunner {
     async fn run(&mut self) -> ! {
+        // Signal that this app is happy to be interrupted at all times
+        self.notification_policy.signal(AppNotificationPolicy::AllowAll);
+
         let mut color_sub = self.state.display_state.color.receiver().unwrap();
         let mut position: i32 = 0;
         let bar_width: i32 = 10;

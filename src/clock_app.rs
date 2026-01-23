@@ -1,6 +1,8 @@
 use chrono::{Datelike, Timelike, Weekday};
 use core::{fmt::Write, str::FromStr};
-use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_futures::select::{select3, Either3};
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use embedded_graphics::{
@@ -10,8 +12,6 @@ use embedded_graphics::{
     primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::signal::Signal;
 use embedded_graphics_core::Drawable;
 use heapless::{String, Vec};
 use micromath::F32Ext;
@@ -20,7 +20,9 @@ use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
 use crate::{
-    app::{AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
+    app::{
+        AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner,
+    },
     buttons::ButtonPress,
     display::{DisplayState, GraphicsBufferWriter, HEIGHT, WIDTH},
     fonts::DrawOntoGraphics,
@@ -209,7 +211,12 @@ impl UnicornApp for ClockAppState {
         inbox: AppRunnerInboxSubscribers,
         notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> AppRunner {
-        AppRunner::Clock(ClockAppRunner::new(graphics_buffer, self, inbox, notification_policy))
+        AppRunner::Clock(ClockAppRunner::new(
+            graphics_buffer,
+            self,
+            inbox,
+            notification_policy,
+        ))
     }
 }
 
@@ -239,6 +246,10 @@ impl<'a> ClockAppRunner {
 
 impl UnicornAppRunner for ClockAppRunner {
     async fn run(&mut self) -> ! {
+        // Signal that this app is happy to be interrupted at all times
+        self.notification_policy
+            .signal(AppNotificationPolicy::AllowAll);
+
         // Publish initial state when app starts
         self.state.send_mqtt_state().await;
 
@@ -323,10 +334,11 @@ impl UnicornAppRunner for ClockAppRunner {
                                         continue;
                                     }
 
-                                    let mut index =
-                                        ((x as f32 + (hue_offset * ClockAppState::TEXT_WIDTH as f32))
-                                            % ClockAppState::TEXT_WIDTH as f32)
-                                            .round() as usize;
+                                    let mut index = ((x as f32
+                                        + (hue_offset * ClockAppState::TEXT_WIDTH as f32))
+                                        % ClockAppState::TEXT_WIDTH as f32)
+                                        .round()
+                                        as usize;
 
                                     if index >= 41 {
                                         index = 0;
@@ -337,7 +349,12 @@ impl UnicornAppRunner for ClockAppRunner {
                             }
 
                             // Mark the clock digits area as dirty
-                            pixels.mark_dirty_region(0, 0, ClockAppState::TEXT_WIDTH - 1, HEIGHT - 1);
+                            pixels.mark_dirty_region(
+                                0,
+                                0,
+                                ClockAppState::TEXT_WIDTH - 1,
+                                HEIGHT - 1,
+                            );
                         }
 
                         hue_offset += 0.008;
@@ -349,7 +366,9 @@ impl UnicornAppRunner for ClockAppRunner {
                             Timer::after_millis(10),
                             self.inbox.buttons.next_message_pure(),
                             self.inbox.mqtt.next_message_pure(),
-                        ).await {
+                        )
+                        .await
+                        {
                             Either3::First(_) => { /* Timer expired, continue animation */ }
                             Either3::Second(press) => {
                                 self.handle_button_press(press).await;
@@ -368,7 +387,9 @@ impl UnicornAppRunner for ClockAppRunner {
                         Timer::after_millis(250),
                         self.inbox.buttons.next_message_pure(),
                         self.inbox.mqtt.next_message_pure(),
-                    ).await {
+                    )
+                    .await
+                    {
                         Either3::First(_) => { /* Timer expired, continue */ }
                         Either3::Second(press) => {
                             self.handle_button_press(press).await;

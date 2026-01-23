@@ -72,7 +72,6 @@ pub struct MqttAppRunner {
     state: &'static MqttApp,
     #[allow(dead_code)]
     inbox: AppRunnerInboxSubscribers,
-    #[allow(dead_code)]
     notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
@@ -94,6 +93,9 @@ impl<'a> MqttAppRunner {
 
 impl UnicornAppRunner for MqttAppRunner {
     async fn run(&mut self) -> ! {
+        // Signal that this app is happy to be interrupted at all times
+        self.notification_policy.signal(AppNotificationPolicy::AllowAll);
+
         loop {
             // Get the last message
             let message = self.state.get_last_message().await;

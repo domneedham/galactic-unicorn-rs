@@ -104,7 +104,6 @@ async fn main(spawner: Spawner) {
         effects_app,
         mqtt_app,
         draw_app,
-        system_state,
         BUTTON_CHANNEL.subscriber().unwrap(),
         MQTT_APP_CHANNEL.subscriber().unwrap(),
         spawner,

@@ -23,7 +23,6 @@ use crate::mqtt::{
     MqttMessage, MqttReceiveMessage,
 };
 use crate::mqtt_app::{MqttApp, MqttAppRunner};
-use crate::system::SystemState;
 use crate::system_app::{SystemApp, SystemAppRunner};
 
 // Signal to tell hardware which buffer to render
@@ -63,8 +62,6 @@ pub struct AppRunnerInboxSubscribers {
 pub enum AppNotificationPolicy {
     AllowAll,
     DenyNormal, // Only Critical allowed
-    #[allow(dead_code)]
-    DenyAll, // Queue everything
 }
 
 pub enum AppRunner {
@@ -144,9 +141,6 @@ pub struct AppController {
     /// Draw app.
     draw_app: &'static DrawApp,
 
-    /// System state.
-    system_state: &'static SystemState,
-
     // The Baton - the graphics writer passed between app runners
     // Wrapped in Mutex for interior mutability since AppController is &'static
     graphics_writer: Mutex<ThreadModeRawMutex, Option<GraphicsBufferWriter>>,
@@ -181,7 +175,6 @@ impl AppController {
         effects_app: &'static EffectsApp,
         mqtt_app: &'static MqttApp,
         draw_app: &'static DrawApp,
-        system_state: &'static SystemState,
         btn_rx: Subscriber<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
         mqtt_rx: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         spawner: Spawner,
@@ -241,7 +234,6 @@ impl AppController {
             effects_app,
             mqtt_app,
             draw_app,
-            system_state,
             graphics_writer: Mutex::new(Some(app_writer)),
             notification_writer: Mutex::new(notification_writer),
             btn_rx: Mutex::new(btn_rx),

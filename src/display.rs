@@ -53,6 +53,7 @@ impl DirtyRect {
 
     /// Mark a single pixel as dirty
     #[inline]
+    #[allow(dead_code)]
     pub fn mark_pixel(&mut self, x: usize, y: usize) {
         if !self.is_dirty {
             self.min_x = x;
@@ -109,12 +110,6 @@ impl DirtyRect {
         } else {
             None
         }
-    }
-
-    /// Check if any pixels are dirty
-    #[inline]
-    pub fn is_dirty(&self) -> bool {
-        self.is_dirty
     }
 }
 
@@ -192,17 +187,6 @@ impl GraphicsBufferReader {
         }
     }
 
-    /// Get a copy of the current buffer contents
-    pub async fn get(&self) -> UnicornGraphics<WIDTH, HEIGHT> {
-        self.pixels.lock().await.clone()
-    }
-
-    /// Wait for the buffer to be updated, then return a copy
-    pub async fn wait_for_update(&self) -> UnicornGraphics<WIDTH, HEIGHT> {
-        self.buffer_change_signal.wait().await;
-        self.pixels.lock().await.clone()
-    }
-
     /// Get read-only access to the buffer. The lock is held for the duration of the guard.
     ///
     /// # Performance
@@ -240,7 +224,11 @@ pub struct GraphicsBufferWriter {
 /// Combined guard that holds both pixel buffer and dirty tracking locks.
 /// Ensures atomic modification of pixels + dirty region marking.
 pub struct PixelsGuard<'a> {
-    pixels: embassy_sync::mutex::MutexGuard<'a, CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+    pixels: embassy_sync::mutex::MutexGuard<
+        'a,
+        CriticalSectionRawMutex,
+        UnicornGraphics<WIDTH, HEIGHT>,
+    >,
     dirty_rect: embassy_sync::mutex::MutexGuard<'a, CriticalSectionRawMutex, DirtyRect>,
 }
 
@@ -300,16 +288,6 @@ impl GraphicsBufferWriter {
         self.pixels.lock().await.clear_all();
         self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
         self.send();
-    }
-
-    /// Mark a region as dirty. Use this after manually updating pixels via `pixels_mut()`.
-    pub async fn mark_dirty_region(&self, x1: usize, y1: usize, x2: usize, y2: usize) {
-        self.dirty_rect.lock().await.mark_region(x1, y1, x2, y2);
-    }
-
-    /// Mark entire display as dirty. Use this after operations that affect the whole screen.
-    pub async fn mark_all_dirty(&self) {
-        self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
     }
 
     pub async fn display_text(

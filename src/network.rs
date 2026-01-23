@@ -1,3 +1,4 @@
+use core::sync::atomic::{AtomicBool, Ordering};
 use cyw43::JoinOptions;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use embassy_executor::Spawner;
@@ -9,7 +10,6 @@ use embassy_rp::{
     peripherals::{DMA_CH1, PIN_23, PIN_24, PIN_25, PIN_29, PIO1},
     pio::{Common, InterruptHandler, Pio},
 };
-use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex},
     mutex::Mutex,
@@ -41,7 +41,9 @@ static NETWORK_STACK: StaticCell<Mutex<CriticalSectionRawMutex, Option<Stack<'st
     StaticCell::new();
 
 /// Store the initialized reference after init
-static mut NETWORK_STACK_REF: Option<&'static Mutex<CriticalSectionRawMutex, Option<Stack<'static>>>> = None;
+static mut NETWORK_STACK_REF: Option<
+    &'static Mutex<CriticalSectionRawMutex, Option<Stack<'static>>>,
+> = None;
 
 /// Atomic flag to track if the network stack has been initialized.
 static NETWORK_STACK_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -66,14 +68,6 @@ pub async fn get_network_stack() -> Stack<'static> {
         // Small delay before checking again
         Timer::after(Duration::from_millis(10)).await;
     }
-}
-
-/// Helper to check if network is currently connected.
-pub async fn is_network_ready(system_state: &'static SystemState) -> bool {
-    matches!(
-        system_state.get_network_state().await,
-        NetworkState::Connected
-    )
 }
 
 bind_interrupts!(struct Irqs {
@@ -107,7 +101,9 @@ pub async fn network_init_task(
     spawner: Spawner,
 ) {
     log::info!("Network init task started (background)");
-    app_state.set_network_state(NetworkState::Initializing).await;
+    app_state
+        .set_network_state(NetworkState::Initializing)
+        .await;
 
     let stack = create_and_join_network(
         spawner, app_state, pin_23, pin_24, pin_25, pin_29, pio_1, dma_ch1,
