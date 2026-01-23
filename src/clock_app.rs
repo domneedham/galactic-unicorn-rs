@@ -1,6 +1,6 @@
 use chrono::{Datelike, Timelike, Weekday};
 use core::{fmt::Write, str::FromStr};
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use embedded_graphics::{
@@ -239,6 +239,9 @@ impl<'a> ClockAppRunner {
 
 impl UnicornAppRunner for ClockAppRunner {
     async fn run(&mut self) -> ! {
+        // Publish initial state when app starts
+        self.state.send_mqtt_state().await;
+
         let mut hue_offset: f32 = 0.0;
         let colors = ClockAppState::generate_rainbow_colors();
 
@@ -300,6 +303,9 @@ impl UnicornAppRunner for ClockAppRunner {
                 )
                 .draw(&mut *pixels)
                 .unwrap();
+
+                // Mark entire screen as dirty after drawing
+                pixels.mark_all_dirty();
             }
 
             match effect {
@@ -329,20 +335,27 @@ impl UnicornAppRunner for ClockAppRunner {
                                     pixels.set_pixel(point, value);
                                 }
                             }
+
+                            // Mark the clock digits area as dirty
+                            pixels.mark_dirty_region(0, 0, ClockAppState::TEXT_WIDTH - 1, HEIGHT - 1);
                         }
 
-                        hue_offset += 0.01;
+                        hue_offset += 0.008;
 
                         self.graphics_buffer.send();
 
-                        // Check for button press during rainbow animation
-                        match select(
-                            Timer::after_millis(50),
+                        // Check for button press or MQTT message during rainbow animation
+                        match select3(
+                            Timer::after_millis(10),
                             self.inbox.buttons.next_message_pure(),
+                            self.inbox.mqtt.next_message_pure(),
                         ).await {
-                            Either::First(_) => { /* Timer expired, continue animation */ }
-                            Either::Second(press) => {
+                            Either3::First(_) => { /* Timer expired, continue animation */ }
+                            Either3::Second(press) => {
                                 self.handle_button_press(press).await;
+                            }
+                            Either3::Third(msg) => {
+                                self.state.process_mqtt_message(msg).await;
                             }
                         }
                     }
@@ -350,14 +363,18 @@ impl UnicornAppRunner for ClockAppRunner {
                 ClockEffect::Color => {
                     self.graphics_buffer.send();
 
-                    // Wait for timer or button press
-                    match select(
+                    // Wait for timer, button press, or MQTT message
+                    match select3(
                         Timer::after_millis(250),
                         self.inbox.buttons.next_message_pure(),
+                        self.inbox.mqtt.next_message_pure(),
                     ).await {
-                        Either::First(_) => { /* Timer expired, continue */ }
-                        Either::Second(press) => {
+                        Either3::First(_) => { /* Timer expired, continue */ }
+                        Either3::Second(press) => {
                             self.handle_button_press(press).await;
+                        }
+                        Either3::Third(msg) => {
+                            self.state.process_mqtt_message(msg).await;
                         }
                     }
                 }

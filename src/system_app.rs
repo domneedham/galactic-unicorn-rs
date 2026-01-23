@@ -95,6 +95,9 @@ impl UnicornAppRunner for SystemAppRunner {
                         }
                     }
                 }
+
+                // Mark entire screen as dirty after drawing
+                pixels.mark_all_dirty();
             }
 
             self.graphics_buffer.send();

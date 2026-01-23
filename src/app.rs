@@ -14,9 +14,7 @@ use strum_macros::{EnumString, IntoStaticStr};
 
 use crate::buttons::ButtonPress;
 use crate::clock_app::{ClockAppRunner, ClockAppState};
-use crate::display::{
-    Display, DisplayState, GraphicsBuffer, GraphicsBufferWriter,
-};
+use crate::display::{Display, DisplayState, GraphicsBuffer, GraphicsBufferWriter};
 use crate::draw_app::{DrawApp, DrawAppRunner};
 use crate::effects_app::{EffectsApp, EffectsAppRunner};
 use crate::mqtt::topics::APP_STATE_TOPIC;
@@ -66,7 +64,7 @@ pub enum AppNotificationPolicy {
     AllowAll,
     DenyNormal, // Only Critical allowed
     #[allow(dead_code)]
-    DenyAll,    // Queue everything
+    DenyAll, // Queue everything
 }
 
 pub enum AppRunner {
@@ -149,9 +147,6 @@ pub struct AppController {
     /// System state.
     system_state: &'static SystemState,
 
-    /// Embassy spawner.
-    spawner: Spawner,
-
     // The Baton - the graphics writer passed between app runners
     // Wrapped in Mutex for interior mutability since AppController is &'static
     graphics_writer: Mutex<ThreadModeRawMutex, Option<GraphicsBufferWriter>>,
@@ -196,8 +191,8 @@ impl AppController {
         static NOTIFICATION_GRAPHICS_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
         // Shared pixel buffers (Mutex-protected)
-        use unicorn_graphics::UnicornGraphics;
         use crate::display::DirtyRect;
+        use unicorn_graphics::UnicornGraphics;
         static APP_PIXELS: Mutex<CriticalSectionRawMutex, UnicornGraphics<53, 11>> =
             Mutex::new(UnicornGraphics::new());
         static NOTIFICATION_PIXELS: Mutex<CriticalSectionRawMutex, UnicornGraphics<53, 11>> =
@@ -220,9 +215,16 @@ impl AppController {
         static NOTIFICATION_GRAPHICS: StaticCell<GraphicsBuffer> = StaticCell::new();
 
         // Initialize graphics buffers with shared mutex access
-        let app_graphics = APP_GRAPHICS.init(GraphicsBuffer::new(&APP_PIXELS, &APP_GRAPHICS_SIGNAL, &APP_DIRTY_RECT));
-        let notification_graphics =
-            NOTIFICATION_GRAPHICS.init(GraphicsBuffer::new(&NOTIFICATION_PIXELS, &NOTIFICATION_GRAPHICS_SIGNAL, &NOTIFICATION_DIRTY_RECT));
+        let app_graphics = APP_GRAPHICS.init(GraphicsBuffer::new(
+            &APP_PIXELS,
+            &APP_GRAPHICS_SIGNAL,
+            &APP_DIRTY_RECT,
+        ));
+        let notification_graphics = NOTIFICATION_GRAPHICS.init(GraphicsBuffer::new(
+            &NOTIFICATION_PIXELS,
+            &NOTIFICATION_GRAPHICS_SIGNAL,
+            &NOTIFICATION_DIRTY_RECT,
+        ));
 
         // Get readers and writers (both access the same underlying mutex)
         let app_reader = app_graphics.reader();
@@ -240,7 +242,6 @@ impl AppController {
             mqtt_app,
             draw_app,
             system_state,
-            spawner,
             graphics_writer: Mutex::new(Some(app_writer)),
             notification_writer: Mutex::new(notification_writer),
             btn_rx: Mutex::new(btn_rx),
@@ -411,7 +412,7 @@ impl AppController {
             // Show as notification overlay for non-MQTT apps
             // First, prepare the notification buffer with initial content
             {
-                let mut writer = self.notification_writer.lock().await;
+                let writer = self.notification_writer.lock().await;
                 writer.clear().await;
             }
 
@@ -436,7 +437,7 @@ impl AppController {
             // Switch back to app layer
             ACTIVE_LAYER.sender().send(DisplayLayer::App);
         } else if message.topic == CLOCK_APP_SET_TOPIC {
-            // self.clock_app.process_mqtt_message(message).await;
+            self.clock_app.process_mqtt_message(message).await;
         } else if message.topic == APP_SET_TOPIC {
             if let Ok(new_app) = Apps::from_str(&message.body) {
                 CHANGE_APP_SIGNAL.signal(new_app);

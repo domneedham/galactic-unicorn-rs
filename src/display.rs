@@ -208,12 +208,16 @@ impl GraphicsBufferReader {
     /// # Performance
     /// Use this when you need direct access without copying the buffer.
     /// The mutex will be locked until the returned guard is dropped.
-    pub async fn lock(&self) -> impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
+    pub async fn lock(
+        &self,
+    ) -> impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
         self.pixels.lock().await
     }
 
     /// Wait for an update signal, then get read-only access to the buffer.
-    pub async fn wait_and_lock(&self) -> impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
+    pub async fn wait_and_lock(
+        &self,
+    ) -> impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
         self.buffer_change_signal.wait().await;
         self.pixels.lock().await
     }
@@ -233,6 +237,38 @@ pub struct GraphicsBufferWriter {
     dirty_rect: &'static Mutex<CriticalSectionRawMutex, DirtyRect>,
 }
 
+/// Combined guard that holds both pixel buffer and dirty tracking locks.
+/// Ensures atomic modification of pixels + dirty region marking.
+pub struct PixelsGuard<'a> {
+    pixels: embassy_sync::mutex::MutexGuard<'a, CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
+    dirty_rect: embassy_sync::mutex::MutexGuard<'a, CriticalSectionRawMutex, DirtyRect>,
+}
+
+impl<'a> PixelsGuard<'a> {
+    /// Mark a rectangular region as dirty
+    pub fn mark_dirty_region(&mut self, x1: usize, y1: usize, x2: usize, y2: usize) {
+        self.dirty_rect.mark_region(x1, y1, x2, y2);
+    }
+
+    /// Mark the entire display as dirty
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty_rect.mark_all(WIDTH, HEIGHT);
+    }
+}
+
+impl<'a> core::ops::Deref for PixelsGuard<'a> {
+    type Target = UnicornGraphics<WIDTH, HEIGHT>;
+    fn deref(&self) -> &Self::Target {
+        &self.pixels
+    }
+}
+
+impl<'a> core::ops::DerefMut for PixelsGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pixels
+    }
+}
+
 impl GraphicsBufferWriter {
     pub const fn new(
         pixels: &'static Mutex<CriticalSectionRawMutex, UnicornGraphics<WIDTH, HEIGHT>>,
@@ -246,10 +282,13 @@ impl GraphicsBufferWriter {
         }
     }
 
-    /// Get mutable access to the underlying graphics buffer for direct drawing.
-    /// Locks the buffer, so keep the scope short!
-    pub async fn pixels_mut(&self) -> impl core::ops::DerefMut<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
-        self.pixels.lock().await
+    /// Get mutable access to pixels with integrated dirty tracking.
+    /// Both locks are held together and released when the guard is dropped.
+    pub async fn pixels_mut(&self) -> PixelsGuard<'_> {
+        PixelsGuard {
+            pixels: self.pixels.lock().await,
+            dirty_rect: self.dirty_rect.lock().await,
+        }
     }
 
     /// Signal that the buffer has been updated and should be rendered.
@@ -260,31 +299,6 @@ impl GraphicsBufferWriter {
     pub async fn clear(&self) {
         self.pixels.lock().await.clear_all();
         self.dirty_rect.lock().await.mark_all(WIDTH, HEIGHT);
-        self.send();
-    }
-
-    /// Set a single pixel.
-    ///
-    /// # Performance Warning
-    /// This acquires and releases the mutex for each pixel. For bulk operations,
-    /// use `pixels_mut()` to get the buffer and set multiple pixels in one lock:
-    /// ```
-    /// let mut pixels = writer.pixels_mut().await;
-    /// pixels.set_pixel(Point::new(x1, y1), color1);
-    /// pixels.set_pixel(Point::new(x2, y2), color2);
-    /// drop(pixels);
-    /// writer.dirty_rect.lock().await.mark_region(x1, y1, x2, y2);
-    /// writer.send();
-    /// ```
-    pub async fn set_pixel(&self, x: i32, y: i32, color: Rgb888) {
-        let point = Point::new(x, y);
-        self.pixels.lock().await.set_pixel(point, color);
-
-        // Mark this pixel as dirty
-        if x >= 0 && x < WIDTH as i32 && y >= 0 && y < HEIGHT as i32 {
-            self.dirty_rect.lock().await.mark_pixel(x as usize, y as usize);
-        }
-
         self.send();
     }
 
@@ -533,8 +547,8 @@ pub async fn render_task(
     app_buffer: GraphicsBufferReader,
     notify_buffer: GraphicsBufferReader,
 ) {
-    use embassy_futures::select::Either;
     use crate::app::{DisplayLayer, ACTIVE_LAYER};
+    use embassy_futures::select::Either;
 
     let mut layer_sub = ACTIVE_LAYER.receiver().unwrap();
     let mut bright_sub = state.brightness.receiver().unwrap();
@@ -547,7 +561,9 @@ pub async fn render_task(
             async {
                 match layer {
                     DisplayLayer::App => Either::First(app_buffer.wait_and_lock().await),
-                    DisplayLayer::Notification => Either::Second(notify_buffer.wait_and_lock().await),
+                    DisplayLayer::Notification => {
+                        Either::Second(notify_buffer.wait_and_lock().await)
+                    }
                 }
             },
             layer_sub.changed(),

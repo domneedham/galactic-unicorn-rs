@@ -624,7 +624,7 @@ pub mod homeassistant {
   "name": "Active app",
   "stat_t": "{APP_STATE_TOPIC}",
   "cmd_t": "{APP_SET_TOPIC}",
-  "options": ["Clock", "Effects", "Mqtt"],
+  "options": ["Clock", "Effects", "Mqtt", "Draw"],
   "uniq_id": "{DEVICE_ID}_apps_01"
 }}"#
         )
@@ -727,10 +727,7 @@ pub mod homeassistant {
     }
 
     /// Send app states over MQTT.
-    async fn send_states(
-        _display: &'static Display,
-        app_controller: &'static AppController,
-    ) {
+    async fn send_states(_display: &'static Display, app_controller: &'static AppController) {
         // TODO: Display state is now published via state_to_mqtt_broadcast_task
         // when values change. For initial state on HASS reconnect, we may need
         // to trigger a republish via DisplayState.

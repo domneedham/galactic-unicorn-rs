@@ -71,7 +71,7 @@ pub struct DrawAppRunner {
     pub notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
-impl<'a> DrawAppRunner {
+impl DrawAppRunner {
     pub fn new(
         graphics_buffer: GraphicsBufferWriter,
         display_state: &'static DisplayState,
@@ -124,56 +124,48 @@ impl<'a> DrawAppRunner {
             accumulator[acc_len..acc_len + n].copy_from_slice(&read_buffer[..n]);
             acc_len += n;
 
-            // Try to parse commands from the accumulator
+            // Parse commands from the accumulator
             let mut consumed = 0;
-            let mut last_result = Ok(());
-            let mut had_progress = false;
+            let mut made_progress = false;
 
             while consumed < acc_len {
-                let remaining = &accumulator[consumed..acc_len];
-
-                match self.try_parse_command(remaining).await {
+                match self.try_parse_command(&accumulator[consumed..acc_len], socket).await {
                     Ok(bytes_used) => {
                         consumed += bytes_used;
-                        last_result = Ok(());
-                        had_progress = true;
+                        made_progress = true;
                     }
                     Err(ParseError::NeedMoreData) => {
-                        // Not enough data yet, wait for more
-                        // But if accumulator is nearly full and we haven't made progress,
-                        // something is wrong - likely a malformed command
-                        if acc_len > 400 && !had_progress {
-                            log::warn!("Accumulator stalled at {} bytes, likely malformed command - resetting", acc_len);
+                        // Accumulator nearly full with no progress = malformed data
+                        if acc_len > 400 && !made_progress {
+                            log::warn!("Accumulator stalled at {} bytes, resetting", acc_len);
                             acc_len = 0;
                             consumed = 0;
-                            last_result = Err(());
                         }
                         break;
                     }
                     Err(ParseError::Invalid(msg)) => {
                         log::warn!("Invalid command: {}", msg);
-                        last_result = Err(());
-                        // Skip this byte and try to resync
-                        consumed += 1;
-                        had_progress = true;
+                        consumed += 1; // Skip byte and try to resync
+                        made_progress = true;
                     }
                 }
             }
 
-            // Remove consumed bytes from accumulator
+            // Shift remaining bytes to start of accumulator
             if consumed > 0 {
                 accumulator.copy_within(consumed..acc_len, 0);
                 acc_len -= consumed;
             }
-
-            // No response sent - fire and forget for maximum throughput
-            // TCP guarantees delivery, application-level ACKs just add latency
         }
     }
 
     /// Try to parse a single command from the data buffer.
     /// Returns the number of bytes consumed if successful, or an error.
-    async fn try_parse_command(&mut self, data: &[u8]) -> Result<usize, ParseError> {
+    async fn try_parse_command(
+        &mut self,
+        data: &[u8],
+        socket: &mut TcpSocket<'_>,
+    ) -> Result<usize, ParseError> {
         if data.len() < 2 {
             return Err(ParseError::NeedMoreData);
         }
@@ -189,6 +181,9 @@ impl<'a> DrawAppRunner {
         const CMD_SET_PIXELS: u8 = 0x02;
         const CMD_FILL: u8 = 0x03;
 
+        const CMD_PING: u8 = 0xFE;
+        const CMD_PONG: u8 = 0xFF;
+
         match data[1] {
             CMD_CLEAR => {
                 // Clear and render
@@ -196,28 +191,23 @@ impl<'a> DrawAppRunner {
                 Ok(2) // Consumed 2 bytes: version + command
             }
             CMD_SET_PIXEL => {
-                // Each SET_PIXEL command is 7 bytes
                 if data.len() < 7 {
                     return Err(ParseError::NeedMoreData);
                 }
 
-                let start = embassy_time::Instant::now();
-
-                // Process ALL pixel commands in this buffer with ONE mutex lock
+                // Batch process consecutive SET_PIXEL commands with single mutex lock
                 let mut offset = 0;
                 let mut pixels = self.graphics_buffer.pixels_mut().await;
 
-                // Track dirty bounds
                 let mut min_x = i32::MAX;
                 let mut min_y = i32::MAX;
                 let mut max_x = i32::MIN;
                 let mut max_y = i32::MIN;
 
-                while offset + 7 <= data.len() {
-                    if data[offset] != VERSION_1 || data[offset + 1] != CMD_SET_PIXEL {
-                        break;
-                    }
-
+                while offset + 7 <= data.len()
+                    && data[offset] == VERSION_1
+                    && data[offset + 1] == CMD_SET_PIXEL
+                {
                     let x = data[offset + 2] as i32;
                     let y = data[offset + 3] as i32;
                     let r = data[offset + 4];
@@ -226,7 +216,6 @@ impl<'a> DrawAppRunner {
 
                     pixels.set_pixel(Point::new(x, y), Rgb888::new(r, g, b));
 
-                    // Update dirty bounds
                     min_x = min_x.min(x);
                     min_y = min_y.min(y);
                     max_x = max_x.max(x);
@@ -235,29 +224,18 @@ impl<'a> DrawAppRunner {
                     offset += 7;
                 }
 
-                // Drop the mutex lock before signalling
-                drop(pixels);
-
-                // Mark the dirty region
                 if min_x != i32::MAX && min_x >= 0 && max_x >= 0 && min_y >= 0 && max_y >= 0 {
-                    self.graphics_buffer
-                        .mark_dirty_region(
-                            min_x as usize,
-                            min_y as usize,
-                            max_x as usize,
-                            max_y as usize,
-                        )
-                        .await;
+                    pixels.mark_dirty_region(
+                        min_x as usize,
+                        min_y as usize,
+                        max_x as usize,
+                        max_y as usize,
+                    );
                 }
 
-                // Signal render once for all pixels
+                drop(pixels);
                 self.graphics_buffer.send();
-
-                let duration = start.elapsed();
-                let pixel_count = offset / 7;
-                log::info!("CMD_SET_PIXEL: processed {} pixels in {}us", pixel_count, duration.as_micros());
-
-                Ok(offset) // Return number of bytes consumed
+                Ok(offset)
             }
             CMD_SET_PIXELS => {
                 if data.len() < 3 {
@@ -270,10 +248,8 @@ impl<'a> DrawAppRunner {
                     return Err(ParseError::NeedMoreData);
                 }
 
-                // Process ALL pixel commands in this buffer with ONE mutex lock
                 let mut pixels = self.graphics_buffer.pixels_mut().await;
 
-                // Track dirty bounds
                 let mut min_x = i32::MAX;
                 let mut min_y = i32::MAX;
                 let mut max_x = i32::MIN;
@@ -289,55 +265,52 @@ impl<'a> DrawAppRunner {
 
                     pixels.set_pixel(Point::new(x, y), Rgb888::new(r, g, b));
 
-                    // Update dirty bounds
                     min_x = min_x.min(x);
                     min_y = min_y.min(y);
                     max_x = max_x.max(x);
                     max_y = max_y.max(y);
                 }
 
-                // Drop the mutex lock before signalling
-                drop(pixels);
-
-                // Mark the dirty region
                 if min_x != i32::MAX && min_x >= 0 && max_x >= 0 && min_y >= 0 && max_y >= 0 {
-                    self.graphics_buffer
-                        .mark_dirty_region(
-                            min_x as usize,
-                            min_y as usize,
-                            max_x as usize,
-                            max_y as usize,
-                        )
-                        .await;
+                    pixels.mark_dirty_region(
+                        min_x as usize,
+                        min_y as usize,
+                        max_x as usize,
+                        max_y as usize,
+                    );
                 }
 
-                // Signal render once for all pixels
+                drop(pixels);
                 self.graphics_buffer.send();
-                Ok(required_len) // Return number of bytes consumed
+                Ok(required_len)
             }
             CMD_FILL => {
-                // Each FILL command is 6 bytes
-                if data.len() < 6 {
+                if data.len() < 5 {
                     return Err(ParseError::NeedMoreData);
                 }
 
-                let r = data[2];
-                let g = data[3];
-                let b = data[4];
+                let color = Rgb888::new(data[2], data[3], data[4]);
 
-                // Fill the entire buffer
                 let mut pixels = self.graphics_buffer.pixels_mut().await;
-                pixels.fill(Rgb888::new(r, g, b));
-
-                // Drop the mutex lock before signalling
+                pixels.fill(color);
+                pixels.mark_all_dirty();
                 drop(pixels);
 
-                // Mark the entire display as dirty
-                self.graphics_buffer.mark_all_dirty().await;
-
-                // Signal render
                 self.graphics_buffer.send();
-                Ok(6) // Consumed 6 bytes: version + command + RGB
+                Ok(5)
+            }
+            CMD_PING => {
+                // Respond with PONG
+                let pong_response = [VERSION_1, CMD_PONG];
+                if let Err(e) = socket.write(&pong_response).await {
+                    log::warn!("Failed to send PONG: {:?}", e);
+                }
+                Ok(2) // Consumed 2 bytes: version + command
+            }
+            CMD_PONG => {
+                // We shouldn't receive PONG (we don't send PING), but handle it gracefully
+                log::info!("PONG received (unexpected)");
+                Ok(2) // Consumed 2 bytes: version + command
             }
             _ => Err(ParseError::Invalid("Unknown command")),
         }
@@ -389,7 +362,8 @@ impl UnicornAppRunner for DrawAppRunner {
                         }
                     };
 
-                    let accept_result = select(scroll_future, socket.accept(DRAW_SERVER_PORT)).await;
+                    let accept_result =
+                        select(scroll_future, socket.accept(DRAW_SERVER_PORT)).await;
 
                     match accept_result {
                         Either::First(_) => unreachable!(), // scroll_future never completes

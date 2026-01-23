@@ -144,10 +144,10 @@ impl<'a> EffectsAppRunner {
                     self.heat[x][y] = self.heat[x][y].max(0.0);
                 }
             }
-        }
 
-        // Mark entire display as dirty since fire effect updates everything
-        self.graphics_buffer.mark_all_dirty().await;
+            // Mark dirty while still holding lock
+            pixels.mark_all_dirty();
+        }
 
         // Clear the bottom row and then add a new fire seed to it
         for x in 0..WIDTH {

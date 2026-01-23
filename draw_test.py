@@ -21,8 +21,9 @@ HEIGHT = 11
 VERSION = 0x01
 CMD_CLEAR = 0x00
 CMD_SET_PIXEL = 0x01
-RSP_OK = 0x01
-RSP_ERROR = 0x00
+CMD_FILL = 0x03
+CMD_PING = 0xFE
+CMD_PONG = 0xFF
 
 class DrawingClient:
     def __init__(self, ip: str, port: int):
@@ -75,6 +76,40 @@ class DrawingClient:
         data = struct.pack('BBBBBBB', VERSION, CMD_SET_PIXEL, x, y, r, g, b)
         return self.send_command(data)
 
+    def fill(self, r: int, g: int, b: int) -> bool:
+        """Fill the entire display with a color"""
+        if not all(0 <= v <= 255 for v in [r, g, b]):
+            print(f"✗ RGB values must be 0-255: ({r}, {g}, {b})")
+            return False
+
+        # Version (1) + Command (1) + R (1) + G (1) + B (1) = 5 bytes
+        data = struct.pack('BBBBB', VERSION, CMD_FILL, r, g, b)
+        return self.send_command(data)
+
+    def ping(self, timeout: float = 5.0) -> float:
+        """Send PING and wait for PONG. Returns round-trip time in seconds."""
+        try:
+            data = struct.pack('BB', VERSION, CMD_PING)
+            start = time.time()
+            self.sock.sendall(data)
+
+            # Wait for PONG response (2 bytes: version + CMD_PONG)
+            old_timeout = self.sock.gettimeout()
+            self.sock.settimeout(timeout)
+            response = self.sock.recv(2)
+            self.sock.settimeout(old_timeout)
+
+            elapsed = time.time() - start
+
+            if len(response) == 2 and response[0] == VERSION and response[1] == CMD_PONG:
+                return elapsed
+            else:
+                print(f"✗ Unexpected PONG response: {response.hex()}")
+                return -1
+        except Exception as e:
+            print(f"✗ Ping failed: {e}")
+            return -1
+
     def close(self):
         """Close the connection"""
         if self.sock:
@@ -87,6 +122,20 @@ class DrawingClient:
 def test_clear(client: DrawingClient):
     """Test clearing the display"""
     print("\n=== Testing Clear ===")
+    client.clear()
+
+def test_fill(client: DrawingClient):
+    """Test filling the display with solid colors"""
+    print("\n=== Testing Fill ===")
+    print("Filling red...")
+    client.fill(255, 0, 0)
+    time.sleep(0.5)
+    print("Filling green...")
+    client.fill(0, 255, 0)
+    time.sleep(0.5)
+    print("Filling blue...")
+    client.fill(0, 0, 255)
+    time.sleep(0.5)
     client.clear()
 
 def test_single_pixel(client: DrawingClient):
@@ -141,7 +190,25 @@ def test_random_pixels(client: DrawingClient, count: int = 100):
 def test_speedtest(client: DrawingClient, count: int = 500):
     """Speed test - send as many pixels as fast as possible"""
     print(f"\n=== Speed Test ({count} pixels) ===")
+
+    # Measure baseline ping latency
+    print("Measuring baseline ping latency...")
+    ping_times = []
+    for _ in range(3):
+        rtt = client.ping()
+        if rtt > 0:
+            ping_times.append(rtt)
+    if ping_times:
+        avg_ping = sum(ping_times) / len(ping_times)
+        print(f"  Baseline ping: {avg_ping*1000:.1f}ms")
+    else:
+        print("  Warning: Could not measure baseline ping")
+        avg_ping = 0
+
     print("Sending pixels as fast as possible...")
+
+    # Send initial ping to sync
+    client.ping()
 
     start = time.time()
     success = 0
@@ -161,14 +228,22 @@ def test_speedtest(client: DrawingClient, count: int = 500):
         else:
             failed += 1
 
+    # Send final ping to ensure all commands processed
+    final_ping = client.ping()
     elapsed = time.time() - start
+
     print(f"\nResults:")
     print(f"  Total pixels: {count}")
     print(f"  Successful:   {success}")
     print(f"  Failed:       {failed}")
-    print(f"  Time:         {elapsed:.2f}s")
-    print(f"  Speed:        {success/elapsed:.1f} pixels/sec")
-    print(f"  Avg latency:  {elapsed/count*1000:.1f}ms per pixel")
+    print(f"  Total time:   {elapsed*1000:.1f}ms (includes final ping)")
+    if avg_ping > 0:
+        adjusted_time = elapsed - avg_ping
+        print(f"  Adjusted time: {adjusted_time*1000:.1f}ms (minus ~1 RTT)")
+        print(f"  Speed:        {success/adjusted_time:.1f} pixels/sec (adjusted)")
+    else:
+        print(f"  Speed:        {success/elapsed:.1f} pixels/sec")
+    print(f"  Final ping:   {final_ping*1000:.1f}ms")
 
 def test_rainbow_sweep(client: DrawingClient):
     """Test sweeping rainbow pattern"""
@@ -441,7 +516,10 @@ def main():
     try:
         # Run basic tests
         test_clear(client)
-        time.sleep(1)
+        time.sleep(0.5)
+
+        test_fill(client)
+        time.sleep(0.5)
 
         test_single_pixel(client)
         time.sleep(1)
