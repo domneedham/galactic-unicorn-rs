@@ -457,7 +457,7 @@ def test_bouncing_ball(client: DrawingClient, duration: int = 15):
                 client.set_pixel(tx, ty, 0, 0, brightness)
 
         frames += 1
-        time.sleep(0.0167)  # ~60 FPS (1/60 second)
+        time.sleep(0.01)
 
     elapsed = time.time() - start
     print(f"Ran {frames} frames in {elapsed:.2f}s ({frames/elapsed:.1f} FPS)")
