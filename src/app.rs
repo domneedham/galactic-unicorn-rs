@@ -313,6 +313,7 @@ impl AppController {
             // Update active_app if CHANGE_APP_SIGNAL fired
             if let embassy_futures::select::Either3::Third(new_app) = result {
                 *self.active_app.lock().await = new_app;
+                self.send_mqtt_states().await;
             }
         }
     }
@@ -433,6 +434,7 @@ impl AppController {
         } else if message.topic == APP_SET_TOPIC {
             if let Ok(new_app) = Apps::from_str(&message.body) {
                 CHANGE_APP_SIGNAL.signal(new_app);
+                return;
             }
         }
 

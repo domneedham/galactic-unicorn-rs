@@ -296,9 +296,10 @@ pub mod clients {
                     Either::First(message) => {
                         message_count += 1;
                         log::info!(
-                            "MQTT send client: Sending message #{} to topic: {}",
+                            "MQTT send client: Sending message #{} to topic: {} with payload: {}",
                             message_count,
-                            message.topic
+                            message.topic,
+                            message.text
                         );
 
                         let result = client
@@ -425,13 +426,15 @@ pub mod clients {
                     Either::First(received_message) => match received_message {
                         Ok(mqtt_message) => {
                             message_count += 1;
-                            log::info!(
-                                "MQTT receive client: Received message #{} on topic: {}",
-                                message_count,
-                                mqtt_message.0
-                            );
 
                             let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
+
+                            log::info!(
+                                "MQTT receive client: Received message #{} - topic: {}, body: {}",
+                                message_count,
+                                message.topic,
+                                message.body
+                            );
 
                             if mqtt_message.0.contains("display") {
                                 log::debug!("MQTT receive client: Publishing to display channel");
