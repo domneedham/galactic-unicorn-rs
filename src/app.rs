@@ -23,6 +23,8 @@ use crate::mqtt::{
     MqttMessage, MqttReceiveMessage,
 };
 use crate::mqtt_app::{MqttApp, MqttAppRunner};
+use crate::network::NetworkState;
+use crate::system::{SystemState, STATE_CHANGED};
 use crate::system_app::{SystemApp, SystemAppRunner};
 
 // Signal to tell hardware which buffer to render
@@ -112,6 +114,27 @@ pub trait UnicornAppRunner {
 
 static CHANGE_APP_SIGNAL: Signal<ThreadModeRawMutex, Apps> = Signal::new();
 
+/// Task that monitors network state and switches from System app to Clock app
+/// when network connects for the first time.
+#[embassy_executor::task]
+async fn network_connected_switch_task(system_state: &'static SystemState) {
+    // Check if already connected (in case network connects very quickly)
+    if system_state.get_network_state().await == NetworkState::Connected {
+        CHANGE_APP_SIGNAL.signal(Apps::Clock);
+        return;
+    }
+
+    // Wait for network to connect
+    loop {
+        STATE_CHANGED.wait().await;
+
+        if system_state.get_network_state().await == NetworkState::Connected {
+            CHANGE_APP_SIGNAL.signal(Apps::Clock);
+            return;
+        }
+    }
+}
+
 /// App controller is responsible for managing apps by:
 /// - Starting and stopping apps on user selection
 /// - Starting and stopping apps from MQTT
@@ -170,6 +193,7 @@ impl AppController {
     pub fn new(
         display: &'static Display,
         display_state: &'static DisplayState,
+        system_state: &'static SystemState,
         system_app: &'static SystemApp,
         clock_app: &'static ClockAppState,
         effects_app: &'static EffectsApp,
@@ -226,7 +250,7 @@ impl AppController {
         let notification_writer = notification_graphics.writer();
 
         let controller = Self {
-            active_app: Mutex::new(Apps::Clock),
+            active_app: Mutex::new(Apps::System),
             display,
             display_state,
             system_app,
@@ -254,6 +278,11 @@ impl AppController {
                 app_reader,
                 notification_reader,
             ))
+            .unwrap();
+
+        // Spawn task to switch from System app to Clock app when network connects
+        spawner
+            .spawn(network_connected_switch_task(system_state))
             .unwrap();
 
         controller

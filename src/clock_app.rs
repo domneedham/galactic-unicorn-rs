@@ -250,11 +250,8 @@ impl UnicornAppRunner for ClockAppRunner {
         self.notification_policy
             .signal(AppNotificationPolicy::AllowAll);
 
-        // Publish initial state when app starts
-        self.state.send_mqtt_state().await;
-
         let mut hue_offset: f32 = 0.0;
-        let colors = ClockAppState::generate_rainbow_colors();
+        let mut colors: Option<Vec<Rgb888, 41>> = None;
 
         let white_style = PrimitiveStyleBuilder::new()
             .fill_color(Rgb888::new(100, 100, 100))
@@ -321,6 +318,12 @@ impl UnicornAppRunner for ClockAppRunner {
 
             match effect {
                 ClockEffect::Rainbow => {
+                    // Lazily generate rainbow colors only when needed
+                    if colors.is_none() {
+                        colors = Some(ClockAppState::generate_rainbow_colors());
+                    }
+                    let colors_ref = colors.as_ref().unwrap();
+
                     for _ in 0..20 {
                         {
                             let mut pixels = self.graphics_buffer.pixels_mut().await;
@@ -343,7 +346,7 @@ impl UnicornAppRunner for ClockAppRunner {
                                     if index >= 41 {
                                         index = 0;
                                     }
-                                    let value = colors[index];
+                                    let value = colors_ref[index];
                                     pixels.set_pixel(point, value);
                                 }
                             }

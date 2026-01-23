@@ -99,6 +99,7 @@ async fn main(spawner: Spawner) {
     let app_controller = app::AppController::new(
         display,
         display_state,
+        system_state,
         system_app,
         clock_app,
         effects_app,

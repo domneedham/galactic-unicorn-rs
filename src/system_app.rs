@@ -1,14 +1,17 @@
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use embedded_graphics::{
     geometry::Point,
-    pixelcolor::{Rgb888, RgbColor, WebColors},
+    pixelcolor::{Rgb888, WebColors},
+    primitives::{Circle, Primitive, PrimitiveStyleBuilder},
+    Drawable,
 };
+use micromath::F32Ext;
 use static_cell::make_static;
 
 use crate::{
     app::{AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
-    display::{DisplayState, GraphicsBufferWriter, HEIGHT, WIDTH},
+    display::{DisplayState, GraphicsBufferWriter, HEIGHT},
 };
 
 /// System app. Shows a loading animation.
@@ -65,38 +68,67 @@ impl<'a> SystemAppRunner {
     }
 }
 
+const MAX_POSITION: f32 = (HEIGHT as i32 - 5) as f32;
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn ease_in(t: f32) -> f32 {
+    t * t * t
+}
+
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t) * (1.0 - t)
+}
+
 impl UnicornAppRunner for SystemAppRunner {
     async fn run(&mut self) -> ! {
         // Signal that this app is happy to be interrupted at all times
         self.notification_policy.signal(AppNotificationPolicy::AllowAll);
 
         let mut color_sub = self.state.display_state.color.receiver().unwrap();
-        let mut position: i32 = 0;
-        let bar_width: i32 = 10;
+        const ANIMATION_DURATION: f32 = 600.0;
+        let mut start_time = Instant::now();
+        let mut min_value = 0.0;
+        let mut max_value = MAX_POSITION;
 
         loop {
             let color = color_sub.try_get().unwrap_or(Rgb888::CSS_PURPLE);
+
+            let style = PrimitiveStyleBuilder::new()
+                .fill_color(color)
+                .build();
 
             {
                 let mut pixels = self.graphics_buffer.pixels_mut().await;
                 pixels.clear_all();
 
-                // Draw a moving bar animation
-                for x in 0..bar_width {
-                    let draw_x = (position + x) % (WIDTH as i32 + bar_width);
-                    if draw_x >= 0 && draw_x < WIDTH as i32 {
-                        for y in 0..HEIGHT as i32 {
-                            // Fade effect based on position in bar
-                            let intensity = ((bar_width - x) as f32 / bar_width as f32 * 255.0) as u8;
-                            let fade_color = Rgb888::new(
-                                (color.r() as u16 * intensity as u16 / 255) as u8,
-                                (color.g() as u16 * intensity as u16 / 255) as u8,
-                                (color.b() as u16 * intensity as u16 / 255) as u8,
-                            );
-                            pixels.set_pixel(Point::new(draw_x, y), fade_color);
-                        }
-                    }
-                }
+                let elapsed_millis = start_time.elapsed().as_millis() as f32;
+                let progress = (elapsed_millis / ANIMATION_DURATION).min(1.0);
+
+                // Left circle with ease_in
+                let eased_progress = ease_in(progress);
+                let animated_value = lerp(min_value, max_value, eased_progress);
+                Circle::new(Point::new(10, animated_value.floor() as i32), 5)
+                    .into_styled(style)
+                    .draw(&mut *pixels)
+                    .unwrap();
+
+                // Center circle with linear easing
+                let animated_value = lerp(min_value, max_value, progress);
+                Circle::new(Point::new(24, animated_value.floor() as i32), 5)
+                    .into_styled(style)
+                    .draw(&mut *pixels)
+                    .unwrap();
+
+                // Right circle with ease_out
+                let eased_progress = ease_out(progress);
+                let animated_value = lerp(min_value, max_value, eased_progress);
+                Circle::new(Point::new(38, animated_value.floor() as i32), 5)
+                    .into_styled(style)
+                    .draw(&mut *pixels)
+                    .unwrap();
 
                 // Mark entire screen as dirty after drawing
                 pixels.mark_all_dirty();
@@ -104,8 +136,22 @@ impl UnicornAppRunner for SystemAppRunner {
 
             self.graphics_buffer.send();
 
-            position = (position + 1) % (WIDTH as i32 + bar_width);
-            Timer::after_millis(30).await;
+            // Check if animation cycle is complete
+            if start_time.elapsed().as_millis() as f32 >= ANIMATION_DURATION {
+                Timer::after_millis(25).await;
+                start_time = Instant::now();
+
+                // Reverse direction
+                if max_value == MAX_POSITION {
+                    max_value = 0.0;
+                    min_value = MAX_POSITION + 0.1; // 0.1 stops jitter on reverse animation
+                } else {
+                    max_value = MAX_POSITION;
+                    min_value = 0.0;
+                }
+            }
+
+            Timer::after_millis(10).await;
         }
     }
 
