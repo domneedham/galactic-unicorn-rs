@@ -264,9 +264,11 @@ pub mod clients {
         client
     }
 
-    /// Send client for MQTT messages. Polls the `SEND_CHANNEL` to know when to send a message.
+    /// Send client for MQTT messages. Waits for network stack then polls the `SEND_CHANNEL`.
     #[embassy_executor::task]
-    pub async fn mqtt_send_client(stack: Stack<'static>) {
+    pub async fn mqtt_send_client(_app_state: &'static crate::system::SystemState) {
+        log::info!("MQTT send client: Waiting for network...");
+        let stack = crate::network::get_network_stack().await;
         log::info!("MQTT send client: Starting");
 
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
@@ -294,9 +296,10 @@ pub mod clients {
                     Either::First(message) => {
                         message_count += 1;
                         log::info!(
-                            "MQTT send client: Sending message #{} to topic: {}",
+                            "MQTT send client: Sending message #{} to topic: {} with payload: {}",
                             message_count,
-                            message.topic
+                            message.topic,
+                            message.text
                         );
 
                         let result = client
@@ -356,14 +359,16 @@ pub mod clients {
         }
     }
 
-    /// Receive client for MQTT messages. Publishes into the relevent publisher.
+    /// Receive client for MQTT messages. Waits for network then publishes to the relevant publisher.
     #[embassy_executor::task]
     pub async fn mqtt_receive_client(
-        stack: Stack<'static>,
+        _app_state: &'static crate::system::SystemState,
         display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
+        log::info!("MQTT receive client: Waiting for network...");
+        let stack = crate::network::get_network_stack().await;
         log::info!("MQTT receive client: Starting");
 
         let socket_rx_buffer = singleton!(: [u8; SOCKET_BUF_SIZE] = [0; SOCKET_BUF_SIZE]).unwrap();
@@ -421,13 +426,15 @@ pub mod clients {
                     Either::First(received_message) => match received_message {
                         Ok(mqtt_message) => {
                             message_count += 1;
-                            log::info!(
-                                "MQTT receive client: Received message #{} on topic: {}",
-                                message_count,
-                                mqtt_message.0
-                            );
 
                             let message = MqttReceiveMessage::new(mqtt_message.0, mqtt_message.1);
+
+                            log::info!(
+                                "MQTT receive client: Received message #{} - topic: {}, body: {}",
+                                message_count,
+                                message.topic,
+                                message.body
+                            );
 
                             if mqtt_message.0.contains("display") {
                                 log::debug!("MQTT receive client: Publishing to display channel");
@@ -620,7 +627,7 @@ pub mod homeassistant {
   "name": "Active app",
   "stat_t": "{APP_STATE_TOPIC}",
   "cmd_t": "{APP_SET_TOPIC}",
-  "options": ["Clock", "Effects", "Mqtt"],
+  "options": ["Clock", "Effects", "Mqtt", "Draw"],
   "uniq_id": "{DEVICE_ID}_apps_01"
 }}"#
         )
@@ -723,13 +730,10 @@ pub mod homeassistant {
     }
 
     /// Send app states over MQTT.
-    async fn send_states(
-        display: &'static Display<'static>,
-        app_controller: &'static AppController,
-    ) {
-        display.send_brightness_state().await;
-        display.send_color_state().await;
-        display.send_auto_brightness_state().await;
+    async fn send_states(_display: &'static Display, app_controller: &'static AppController) {
+        // TODO: Display state is now published via state_to_mqtt_broadcast_task
+        // when values change. For initial state on HASS reconnect, we may need
+        // to trigger a republish via DisplayState.
         app_controller.send_mqtt_states().await;
     }
 
@@ -743,7 +747,7 @@ pub mod homeassistant {
     /// Waits for an MQTT message for home assistant status and will republish discovery snd state.
     #[embassy_executor::task]
     pub async fn hass_discovery_task(
-        display: &'static Display<'static>,
+        display: &'static Display,
         app_controller: &'static AppController,
     ) {
         send_home_assistant_discovery().await;

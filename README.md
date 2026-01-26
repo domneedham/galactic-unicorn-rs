@@ -58,12 +58,12 @@ pub const HASS_BASE_MQTT_TOPIC: &'static str = "homeassistant";
 - [x] Network resiliency
 - [x] Auto brightness
 - [x] Good documentation
+- [x] Utilise D button
+- [x] More effects / animations
 - [ ] Web configuration portal
 - [ ] Feature disablement
 - [ ] Saving last known config for reboot
-- [ ] More effects / animations
 - [ ] Speaker usage
-- [ ] Utilise D button
 
 ## Known Issues
 

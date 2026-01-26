@@ -210,9 +210,15 @@ pub mod ntp {
         }
     }
 
-    /// NTP task for syncing to NTP.
+    /// NTP task for syncing to NTP. Waits for network stack to be ready first.
     #[embassy_executor::task]
-    pub async fn ntp_worker(stack: Stack<'static>, time: &'static Time) {
+    pub async fn ntp_worker(
+        time: &'static Time,
+        _app_state: &'static crate::system::SystemState,
+    ) {
+        log::info!("NTP worker: Waiting for network...");
+        let stack = crate::network::get_network_stack().await;
+        log::info!("NTP worker: Starting");
         loop {
             log::info!("NTP sync triggered");
 
@@ -379,9 +385,7 @@ pub mod ntp {
                                 log::info!("DNS resolved to: {:?}", sock_addr);
                                 return Ok(sock_addr);
                             }
-                            _ => {
-                                log::error!("DNS returned non-IPv4 address, skipping");
-                            }
+                            // Currently only IPv4 is supported by embassy-net in this configuration
                         }
                     } else {
                         log::error!("DNS returned empty response");

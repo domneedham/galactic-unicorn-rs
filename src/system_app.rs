@@ -1,112 +1,147 @@
-use embassy_time::{Duration, Instant, Timer};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
+use embassy_time::{Instant, Timer};
 use embedded_graphics::{
     geometry::Point,
     pixelcolor::{Rgb888, WebColors},
     primitives::{Circle, Primitive, PrimitiveStyleBuilder},
+    Drawable,
 };
-use embedded_graphics_core::Drawable;
-use galactic_unicorn_embassy::{HEIGHT, WIDTH};
+use micromath::F32Ext;
 use static_cell::make_static;
-use unicorn_graphics::UnicornGraphics;
 
 use crate::{
-    app::UnicornApp, buttons::ButtonPress, display::messages::DisplayGraphicsMessage,
-    mqtt::MqttReceiveMessage,
+    app::{AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
+    display::{DisplayState, GraphicsBufferWriter, HEIGHT},
 };
 
-use micromath::F32Ext;
-
-pub struct SystemApp;
+/// System app. Shows a loading animation.
+pub struct SystemApp {
+    display_state: &'static DisplayState,
+}
 
 impl SystemApp {
     /// Create the static ref to system app.
     /// Must only be called once or will panic.
-    pub fn new() -> &'static Self {
-        make_static!(Self {})
-    }
-
-    /// Linear interpolation function.
-    /// It linearly interpolates between a and b based on the value of t.
-    ///
-    /// a: The starting value.
-    /// b: The ending value.
-    /// t: The interpolation factor (between 0.0 and 1.0).
-    fn lerp(a: f32, b: f32, t: f32) -> f32 {
-        a + (b - a) * t
-    }
-
-    /// Ease in cubic function.
-    ///
-    /// Cube the input to make a gradual increase.
-    fn ease_in(t: f32) -> f32 {
-        t * t * t
-    }
-
-    /// Ease out cubic function.
-    ///
-    /// Calculates 1 minus (1 minus t) squared, which provides a gradual decrease in easing from 1 to 0.
-    fn ease_out(t: f32) -> f32 {
-        1.0 - (1.0 - t) * (1.0 - t)
+    pub fn new(display_state: &'static DisplayState) -> &'static Self {
+        make_static!(Self { display_state })
     }
 }
 
 impl UnicornApp for SystemApp {
-    async fn display(&self) {
-        const MAX_POSITION: f32 = (HEIGHT as i32 - 5) as f32;
+    async fn create_runner(
+        &'static self,
+        graphics_buffer: GraphicsBufferWriter,
+        inbox: AppRunnerInboxSubscribers,
+        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+    ) -> AppRunner {
+        AppRunner::System(SystemAppRunner::new(
+            graphics_buffer,
+            self,
+            inbox,
+            notification_policy,
+        ))
+    }
+}
 
-        let mut graphics = UnicornGraphics::<WIDTH, HEIGHT>::new();
+/// Runner for the system app. Shows a loading animation.
+pub struct SystemAppRunner {
+    graphics_buffer: GraphicsBufferWriter,
+    state: &'static SystemApp,
+    #[allow(dead_code)]
+    inbox: AppRunnerInboxSubscribers,
+    notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+}
 
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color(Rgb888::CSS_PURPLE)
-            .build();
+impl<'a> SystemAppRunner {
+    pub fn new(
+        graphics_buffer: GraphicsBufferWriter,
+        state: &'static SystemApp,
+        inbox: AppRunnerInboxSubscribers,
+        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
+    ) -> Self {
+        Self {
+            graphics_buffer,
+            state,
+            inbox,
+            notification_policy,
+        }
+    }
+}
 
+const MAX_POSITION: f32 = (HEIGHT as i32 - 5) as f32;
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn ease_in(t: f32) -> f32 {
+    t * t * t
+}
+
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t) * (1.0 - t)
+}
+
+impl UnicornAppRunner for SystemAppRunner {
+    async fn run(&mut self) -> ! {
+        // Signal that this app is happy to be interrupted at all times
+        self.notification_policy.signal(AppNotificationPolicy::AllowAll);
+
+        let mut color_sub = self.state.display_state.color.receiver().unwrap();
         const ANIMATION_DURATION: f32 = 600.0;
         let mut start_time = Instant::now();
-
         let mut min_value = 0.0;
         let mut max_value = MAX_POSITION;
 
         loop {
-            graphics.clear_all();
+            let color = color_sub.try_get().unwrap_or(Rgb888::CSS_PURPLE);
 
-            let elapsed_millis = start_time.elapsed().as_millis() as f32;
+            let style = PrimitiveStyleBuilder::new()
+                .fill_color(color)
+                .build();
 
-            let progress = (elapsed_millis / ANIMATION_DURATION).min(1.0);
+            {
+                let mut pixels = self.graphics_buffer.pixels_mut().await;
+                pixels.clear_all();
 
-            // left circle
-            let eased_progress = Self::ease_in(progress);
-            let animated_value = Self::lerp(min_value, max_value, eased_progress);
-            Circle::new(Point::new(10, animated_value.floor() as i32), 5)
-                .into_styled(style)
-                .draw(&mut graphics)
-                .unwrap();
+                let elapsed_millis = start_time.elapsed().as_millis() as f32;
+                let progress = (elapsed_millis / ANIMATION_DURATION).min(1.0);
 
-            // center circle
-            let animated_value = Self::lerp(min_value, max_value, progress);
-            Circle::new(Point::new(24, animated_value.floor() as i32), 5)
-                .into_styled(style)
-                .draw(&mut graphics)
-                .unwrap();
+                // Left circle with ease_in
+                let eased_progress = ease_in(progress);
+                let animated_value = lerp(min_value, max_value, eased_progress);
+                Circle::new(Point::new(10, animated_value.floor() as i32), 5)
+                    .into_styled(style)
+                    .draw(&mut *pixels)
+                    .unwrap();
 
-            // right circle
-            let eased_progress = Self::ease_out(progress);
-            let animated_value = Self::lerp(min_value, max_value, eased_progress);
-            Circle::new(Point::new(38, animated_value.floor() as i32), 5)
-                .into_styled(style)
-                .draw(&mut graphics)
-                .unwrap();
+                // Center circle with linear easing
+                let animated_value = lerp(min_value, max_value, progress);
+                Circle::new(Point::new(24, animated_value.floor() as i32), 5)
+                    .into_styled(style)
+                    .draw(&mut *pixels)
+                    .unwrap();
 
-            DisplayGraphicsMessage::from_app(graphics.get_pixels(), Duration::from_millis(10))
-                .send_and_replace_queue()
-                .await;
+                // Right circle with ease_out
+                let eased_progress = ease_out(progress);
+                let animated_value = lerp(min_value, max_value, eased_progress);
+                Circle::new(Point::new(38, animated_value.floor() as i32), 5)
+                    .into_styled(style)
+                    .draw(&mut *pixels)
+                    .unwrap();
 
-            Timer::after_millis(10).await;
+                // Mark entire screen as dirty after drawing
+                pixels.mark_all_dirty();
+            }
 
-            if elapsed_millis >= ANIMATION_DURATION {
+            self.graphics_buffer.send();
+
+            // Check if animation cycle is complete
+            if start_time.elapsed().as_millis() as f32 >= ANIMATION_DURATION {
                 Timer::after_millis(25).await;
-
                 start_time = Instant::now();
 
+                // Reverse direction
                 if max_value == MAX_POSITION {
                     max_value = 0.0;
                     min_value = MAX_POSITION + 0.1; // 0.1 stops jitter on reverse animation
@@ -115,16 +150,12 @@ impl UnicornApp for SystemApp {
                     min_value = 0.0;
                 }
             }
+
+            Timer::after_millis(10).await;
         }
     }
 
-    async fn start(&self) {}
-
-    async fn stop(&self) {}
-
-    async fn button_press(&self, _: ButtonPress) {}
-
-    async fn process_mqtt_message(&self, _: MqttReceiveMessage) {}
-
-    async fn send_mqtt_state(&self) {}
+    fn release_writer(self) -> GraphicsBufferWriter {
+        self.graphics_buffer
+    }
 }
