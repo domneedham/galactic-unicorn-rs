@@ -20,6 +20,7 @@ mod network;
 mod system;
 mod system_app;
 mod time;
+mod web;
 
 use buttons::ButtonPress;
 use display::{Display, DisplayState};
@@ -36,12 +37,17 @@ use panic_halt as _;
 
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
+use picoserve::make_static;
+use picoserve::AppBuilder;
+use picoserve::AppRouter;
 
 use crate::buttons::button_d_task;
 use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
 };
 use crate::mqtt::MqttReceiveMessage;
+use crate::web::web_task;
+use crate::web::WebAppProps;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -74,14 +80,7 @@ async fn main(spawner: Spawner) {
         sleep: p.PIN_27,
     };
 
-    let display = Display::new(
-        p.PIO0,
-        p.DMA_CH0,
-        p.ADC,
-        p.USB,
-        display_pins,
-        sensor_pins,
-    );
+    let display = Display::new(p.PIO0, p.DMA_CH0, p.ADC, p.USB, display_pins, sensor_pins);
 
     let display_state = DisplayState::new();
     let system_state = system::SystemState::new();
@@ -93,8 +92,13 @@ async fn main(spawner: Spawner) {
     let draw_app = draw_app::DrawApp::new(system_state, display_state);
 
     // Button channel: 4 capacity, 1 subscriber (AppController), 9 publishers (button tasks)
-    static BUTTON_CHANNEL: PubSubChannel<ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9> =
-        PubSubChannel::new();
+    static BUTTON_CHANNEL: PubSubChannel<
+        ThreadModeRawMutex,
+        (UnicornButtons, ButtonPress),
+        4,
+        1,
+        9,
+    > = PubSubChannel::new();
 
     let app_controller = app::AppController::new(
         display,
@@ -154,7 +158,14 @@ async fn main(spawner: Spawner) {
     // Spawn network init in background (doesn't block)
     spawner
         .spawn(network::network_init_task(
-            system_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1, spawner,
+            system_state,
+            p.PIN_23,
+            p.PIN_24,
+            p.PIN_25,
+            p.PIN_29,
+            p.PIO1,
+            p.DMA_CH1,
+            spawner,
         ))
         .unwrap();
 
@@ -220,6 +231,9 @@ async fn main(spawner: Spawner) {
             app_controller,
         ))
         .unwrap();
+
+    let web_app = make_static!(AppRouter<WebAppProps>, WebAppProps.build_app());
+    spawner.must_spawn(web_task(web_app));
 
     app_controller.run().await;
 }

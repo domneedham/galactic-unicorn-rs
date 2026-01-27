@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Websockets</title>
+</head>
+
+<body>
+    <div>
+        Messages sent will be echoed back to the client
+    </div>
+    <input type="text">
+    <button type="button">Send</button>
+    <ul id="output"></ul>
+</body>
+
+<script>
+    // Load CSS first, then JS, to avoid parallel requests
+    function loadCSS(href) {
+        return new Promise((resolve, reject) => {
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = href;
+            link.onload = () => resolve();
+            link.onerror = () => reject(new Error(`Failed to load CSS: ${href}`));
+            document.head.appendChild(link);
+        });
+    }
+
+    function loadJS(src) {
+        return new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error(`Failed to load JS: ${src}`));
+            document.body.appendChild(script);
+        });
+    }
+
+    // Load resources sequentially after DOM is ready
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            // Load CSS first
+            await loadCSS('index.css');
+            // Then load external JS if needed
+            // await loadJS('index.js');
+
+            // Initialize app after resources loaded
+            initApp();
+        } catch (err) {
+            console.error('Failed to load resources:', err);
+            initApp(); // Still try to initialize
+        }
+    });
+
+    function initApp() {
+        let input = document.getElementsByTagName("input")[0];
+        let output = document.getElementById("output");
+        let button = document.getElementsByTagName("button")[0];
+
+        input.addEventListener("input", function () {
+            button.disabled = !input.value;
+        });
+
+        const currentPath = window.location.pathname;
+
+        let websocketUri = (window.location.protocol === "https:") ? "wss:" : "ws:";
+        websocketUri += "//" + window.location.host;
+        websocketUri += currentPath.slice(0, currentPath.lastIndexOf("/") + 1) + "ws";
+
+        let ws = new WebSocket(websocketUri, ["echo", "ignored_protocol"]);
+
+        ws.addEventListener("close", function (ev) {
+            ws.close();
+            output.innerText = `Websockets Closed: ${ev.reason} (${ev.code})`;
+        })
+
+        ws.addEventListener("error", function (ev) {
+            ws.close();
+            console.error(ev);
+            output.innerText = "Websockets Error";
+        });
+
+        ws.addEventListener("message", function (ev) {
+            let message = document.createElement("li");
+            message.innerText = ev.data;
+            output.appendChild(message);
+        });
+
+        button.addEventListener("click", function () {
+            ws.send(input.value);
+
+            input.value = "";
+        });
+    }
+</script>
+
+</html>
