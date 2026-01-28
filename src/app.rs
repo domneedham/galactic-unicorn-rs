@@ -1,7 +1,6 @@
 use core::str::FromStr;
 
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber};
@@ -15,7 +14,6 @@ use strum_macros::{EnumString, IntoStaticStr};
 use crate::buttons::ButtonPress;
 use crate::clock_app::{ClockAppRunner, ClockAppState};
 use crate::display::{Display, DisplayState, GraphicsBuffer, GraphicsBufferWriter};
-use crate::draw_app::{DrawApp, DrawAppRunner};
 use crate::effects_app::{EffectsApp, EffectsAppRunner};
 use crate::mqtt::topics::APP_STATE_TOPIC;
 use crate::mqtt::{
@@ -52,9 +50,6 @@ pub enum Apps {
     /// The MQTT app.
     Mqtt,
 
-    /// The draw app.
-    Draw,
-
     /// The web app (WebSocket draw).
     Web,
 }
@@ -75,7 +70,6 @@ pub enum AppRunner {
     Clock(ClockAppRunner),
     Effects(EffectsAppRunner),
     Mqtt(MqttAppRunner),
-    Draw(DrawAppRunner),
     Web(WebAppRunner),
 }
 
@@ -86,7 +80,6 @@ impl AppRunner {
             AppRunner::Clock(runner) => runner.run().await,
             AppRunner::Effects(runner) => runner.run().await,
             AppRunner::Mqtt(runner) => runner.run().await,
-            AppRunner::Draw(runner) => runner.run().await,
             AppRunner::Web(runner) => runner.run().await,
         }
     }
@@ -97,7 +90,6 @@ impl AppRunner {
             AppRunner::Clock(runner) => runner.release_writer(),
             AppRunner::Effects(runner) => runner.release_writer(),
             AppRunner::Mqtt(runner) => runner.release_writer(),
-            AppRunner::Draw(runner) => runner.release_writer(),
             AppRunner::Web(runner) => runner.release_writer(),
         }
     }
@@ -168,9 +160,6 @@ pub struct AppController {
     /// MQTT app.
     mqtt_app: &'static MqttApp,
 
-    /// Draw app.
-    draw_app: &'static DrawApp,
-
     /// Web app.
     web_app: &'static WebApp,
 
@@ -208,7 +197,6 @@ impl AppController {
         clock_app: &'static ClockAppState,
         effects_app: &'static EffectsApp,
         mqtt_app: &'static MqttApp,
-        draw_app: &'static DrawApp,
         web_app: &'static WebApp,
         btn_rx: Subscriber<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
         mqtt_rx: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
@@ -268,7 +256,6 @@ impl AppController {
             clock_app,
             effects_app,
             mqtt_app,
-            draw_app,
             web_app,
             graphics_writer: Mutex::new(Some(app_writer)),
             notification_writer: Mutex::new(notification_writer),
@@ -331,11 +318,6 @@ impl AppController {
                         .create_runner(writer, inbox, Signal::new())
                         .await
                 }
-                Apps::Draw => {
-                    self.draw_app
-                        .create_runner(writer, inbox, Signal::new())
-                        .await
-                }
                 Apps::Web => {
                     self.web_app
                         .create_runner(writer, inbox, Signal::new())
@@ -354,7 +336,7 @@ impl AppController {
             .await;
 
             // 3. App Switch triggered: Recover the writer from the runner
-            // Because DrawAppRunner is dropped here, all its futures stop
+            // Because the runner is dropped here, all its futures stop
             *self.graphics_writer.lock().await = Some(runner.release_writer());
 
             // Update active_app based on which signal fired
@@ -426,7 +408,7 @@ impl AppController {
             UnicornButtons::SwitchA => Apps::Clock,
             UnicornButtons::SwitchB => Apps::Effects,
             UnicornButtons::SwitchC => Apps::Mqtt,
-            UnicornButtons::SwitchD => Apps::Draw,
+            UnicornButtons::SwitchD => Apps::Web,
             _ => return,
         };
 
@@ -452,8 +434,8 @@ impl AppController {
 
             // For other apps, decide if we should show as notification
             let should_show = match active_app {
-                Apps::Draw | Apps::Web => {
-                    // Draw and Web apps deny normal notifications when actively being used
+                Apps::Web => {
+                    // Web app denies normal notifications when actively being used
                     false
                 }
                 _ => true, // All other apps allow notifications

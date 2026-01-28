@@ -9,6 +9,7 @@ Example: python draw_client.py 192.168.1.100
 
 import sys
 import time
+import random
 import websocket
 
 # Protocol constants
@@ -229,21 +230,327 @@ def hsv_to_rgb(h: float, s: float, v: float) -> tuple:
     return (int((r + m) * 255), int((g + m) * 255), int((b + m) * 255))
 
 
+def perf_individual_pixels(client: GalacticUnicornClient, count: int = 2000):
+    """Speed test - send individual pixel commands as fast as possible."""
+    print(f"\n=== Perf: Individual Messages ({count} pixels) ===")
+    print("Sending one pixel per WebSocket message...")
+
+    client.clear()
+    start = time.time()
+    success = 0
+
+    for i in range(count):
+        x = i % DISPLAY_WIDTH
+        y = (i // DISPLAY_WIDTH) % DISPLAY_HEIGHT
+        if (i // (DISPLAY_WIDTH * DISPLAY_HEIGHT)) % 2 == 0:
+            r, g, b = 255, 0, 0
+        else:
+            r, g, b = 0, 0, 255
+
+        client.set_pixel(x, y, r, g, b)
+        success += 1
+
+    elapsed = time.time() - start
+
+    print(f"  Pixels:     {success}")
+    print(f"  Total time: {elapsed*1000:.1f}ms")
+    print(f"  Speed:      {success/elapsed:.1f} pixels/sec")
+
+
+def perf_batched_pixels(client: GalacticUnicornClient, count: int = 5000):
+    """Speed test - batch multiple pixel commands into single WebSocket messages."""
+    BATCH_SIZE = 50
+    print(f"\n=== Perf: Batched Messages ({count} pixels, {BATCH_SIZE}/batch) ===")
+
+    client.clear()
+    start = time.time()
+    sent = 0
+    batch = []
+
+    for i in range(count):
+        x = i % DISPLAY_WIDTH
+        y = (i // DISPLAY_WIDTH) % DISPLAY_HEIGHT
+        if (i // (DISPLAY_WIDTH * DISPLAY_HEIGHT)) % 2 == 0:
+            r, g, b = 0, 255, 0
+        else:
+            r, g, b = 255, 0, 255
+
+        batch.append((x, y, r, g, b))
+
+        if len(batch) >= BATCH_SIZE or i == count - 1:
+            client.set_pixels_batch(batch)
+            sent += len(batch)
+            batch = []
+
+    elapsed = time.time() - start
+
+    print(f"  Pixels:     {sent}")
+    print(f"  Total time: {elapsed*1000:.1f}ms")
+    print(f"  Speed:      {sent/elapsed:.1f} pixels/sec")
+
+
+def perf_full_frames(client: GalacticUnicornClient, frames: int = 100):
+    """Test full frame updates - send entire display as one batched message per frame."""
+    total_pixels = DISPLAY_WIDTH * DISPLAY_HEIGHT
+    print(f"\n=== Perf: Full Frames ({frames} frames, {total_pixels} pixels each) ===")
+
+    client.clear()
+    start = time.time()
+
+    for frame in range(frames):
+        pixels = []
+        for y in range(DISPLAY_HEIGHT):
+            for x in range(DISPLAY_WIDTH):
+                hue = ((x + frame * 3) % DISPLAY_WIDTH) / DISPLAY_WIDTH * 360
+                r, g, b = hsv_to_rgb(hue, 1.0, 1.0)
+                pixels.append((x, y, r, g, b))
+
+        client.set_pixels_batch(pixels)
+
+    elapsed = time.time() - start
+    fps = frames / elapsed
+    pixels_per_sec = frames * total_pixels / elapsed
+
+    print(f"  Frames:     {frames}")
+    print(f"  Total time: {elapsed*1000:.1f}ms")
+    print(f"  FPS:        {fps:.1f}")
+    print(f"  Pixels/sec: {pixels_per_sec:.0f}")
+
+
+def perf_random_pixels(client: GalacticUnicornClient, count: int = 2000):
+    """Speed test - random individual pixel writes."""
+    print(f"\n=== Perf: Random Pixels ({count}) ===")
+
+    client.clear()
+    start = time.time()
+
+    for _ in range(count):
+        x = random.randint(0, DISPLAY_WIDTH - 1)
+        y = random.randint(0, DISPLAY_HEIGHT - 1)
+        r = random.randint(0, 255)
+        g = random.randint(0, 255)
+        b = random.randint(0, 255)
+        client.set_pixel(x, y, r, g, b)
+
+    elapsed = time.time() - start
+
+    print(f"  Pixels:     {count}")
+    print(f"  Total time: {elapsed*1000:.1f}ms")
+    print(f"  Speed:      {count/elapsed:.1f} pixels/sec")
+
+
+def perf_fill_cycles(client: GalacticUnicornClient, cycles: int = 30):
+    """Speed test - rapid full-screen fill color changes."""
+    print(f"\n=== Perf: Fill Cycles ({cycles} fills) ===")
+
+    colors = [
+        (255, 0, 0), (0, 255, 0), (0, 0, 255),
+        (255, 255, 0), (255, 0, 255), (0, 255, 255),
+        (255, 255, 255),
+    ]
+
+    start = time.time()
+
+    for i in range(cycles):
+        r, g, b = colors[i % len(colors)]
+        client.fill(r, g, b)
+
+    elapsed = time.time() - start
+
+    print(f"  Fills:      {cycles}")
+    print(f"  Total time: {elapsed*1000:.1f}ms")
+    print(f"  Speed:      {cycles/elapsed:.1f} fills/sec")
+
+
+def perf_bouncing_ball(client: GalacticUnicornClient, duration: float = 10.0):
+    """Sustained test - bouncing ball with trail, batched per frame."""
+    print(f"\n=== Perf: Bouncing Ball ({duration:.0f}s) ===")
+
+    x, y = DISPLAY_WIDTH / 2.0, DISPLAY_HEIGHT / 2.0
+    vx, vy = 1.8, 1.1
+    trail = []
+    trail_length = 5
+
+    start = time.time()
+    frames = 0
+
+    while time.time() - start < duration:
+        x += vx
+        y += vy
+
+        if x <= 0 or x >= DISPLAY_WIDTH - 1:
+            vx = -vx
+            x = max(0, min(DISPLAY_WIDTH - 1, x))
+        if y <= 0 or y >= DISPLAY_HEIGHT - 1:
+            vy = -vy
+            y = max(0, min(DISPLAY_HEIGHT - 1, y))
+
+        ix, iy = int(x), int(y)
+        trail.append((ix, iy))
+
+        pixels = []
+
+        if len(trail) > trail_length:
+            old_x, old_y = trail.pop(0)
+            pixels.append((old_x, old_y, 0, 0, 0))
+
+        for i, (tx, ty) in enumerate(trail):
+            brightness = int((i + 1) / len(trail) * 255)
+            if i == len(trail) - 1:
+                pixels.append((tx, ty, 255, 255, 255))
+            else:
+                pixels.append((tx, ty, 0, 0, brightness))
+
+        client.set_pixels_batch(pixels)
+        frames += 1
+
+    elapsed = time.time() - start
+    print(f"  Frames:     {frames}")
+    print(f"  Total time: {elapsed:.2f}s")
+    print(f"  FPS:        {frames/elapsed:.1f}")
+
+
+def perf_game_of_life(client: GalacticUnicornClient, generations: int = 60):
+    """Sustained test - Game of Life, full frame batched per generation."""
+    print(f"\n=== Perf: Game of Life ({generations} generations) ===")
+
+    grid = [[random.choice([True, False]) for _ in range(DISPLAY_HEIGHT)]
+            for _ in range(DISPLAY_WIDTH)]
+
+    start = time.time()
+
+    for gen in range(generations):
+        pixels = []
+        for x in range(DISPLAY_WIDTH):
+            for y in range(DISPLAY_HEIGHT):
+                if grid[x][y]:
+                    pixels.append((x, y, 255, 255, 255))
+                else:
+                    pixels.append((x, y, 0, 0, 0))
+        client.set_pixels_batch(pixels)
+
+        new_grid = [[False] * DISPLAY_HEIGHT for _ in range(DISPLAY_WIDTH)]
+        for x in range(DISPLAY_WIDTH):
+            for y in range(DISPLAY_HEIGHT):
+                neighbors = 0
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx = (x + dx) % DISPLAY_WIDTH
+                        ny = (y + dy) % DISPLAY_HEIGHT
+                        if grid[nx][ny]:
+                            neighbors += 1
+                if grid[x][y]:
+                    new_grid[x][y] = neighbors in [2, 3]
+                else:
+                    new_grid[x][y] = neighbors == 3
+        grid = new_grid
+
+    elapsed = time.time() - start
+    print(f"  Generations: {generations}")
+    print(f"  Total time:  {elapsed:.2f}s")
+    print(f"  Gen/sec:     {generations/elapsed:.1f}")
+    print(f"  FPS:         {generations/elapsed:.1f}")
+
+
+def perf_scrolling_rainbow(client: GalacticUnicornClient, duration: float = 10.0):
+    """Sustained test - scrolling rainbow, full frame batched."""
+    print(f"\n=== Perf: Scrolling Rainbow ({duration:.0f}s) ===")
+
+    start = time.time()
+    frames = 0
+
+    while time.time() - start < duration:
+        pixels = []
+        for y in range(DISPLAY_HEIGHT):
+            for x in range(DISPLAY_WIDTH):
+                hue = ((x + frames * 2) % DISPLAY_WIDTH) / DISPLAY_WIDTH * 360
+                row_shift = (y / DISPLAY_HEIGHT) * 60
+                r, g, b = hsv_to_rgb(hue + row_shift, 1.0, 1.0)
+                pixels.append((x, y, r, g, b))
+
+        client.set_pixels_batch(pixels)
+        frames += 1
+
+    elapsed = time.time() - start
+    total_pixels = DISPLAY_WIDTH * DISPLAY_HEIGHT
+
+    print(f"  Frames:     {frames}")
+    print(f"  Total time: {elapsed:.2f}s")
+    print(f"  FPS:        {frames/elapsed:.1f}")
+    print(f"  Pixels/sec: {frames * total_pixels / elapsed:.0f}")
+
+
+def run_perf_tests(client: GalacticUnicornClient):
+    """Run all performance tests."""
+    print("\n" + "=" * 50)
+    print("  PERFORMANCE TESTS")
+    print("=" * 50)
+
+    # Throughput benchmarks
+    perf_individual_pixels(client, 2000)
+    time.sleep(1)
+
+    perf_batched_pixels(client, 5000)
+    time.sleep(1)
+
+    perf_fill_cycles(client, 30)
+    time.sleep(1)
+
+    perf_full_frames(client, 100)
+    time.sleep(1)
+
+    perf_random_pixels(client, 2000)
+    time.sleep(1)
+
+    # Sustained visual tests
+    client.clear()
+    perf_scrolling_rainbow(client, 10.0)
+    time.sleep(1)
+
+    client.clear()
+    perf_bouncing_ball(client, 10.0)
+    time.sleep(1)
+
+    client.clear()
+    perf_game_of_life(client, 60)
+
+    client.clear()
+    print("\n" + "=" * 50)
+    print("  PERFORMANCE TESTS COMPLETE")
+    print("=" * 50)
+
+
 def main():
     """Main entry point."""
     if len(sys.argv) < 2:
-        print("Usage: python draw_client.py <hostname> [port]")
+        print("Usage: python draw_client.py <hostname> [port] [--perf]")
         print("Example: python draw_client.py 192.168.1.100")
+        print("         python draw_client.py 192.168.1.100 --perf")
         sys.exit(1)
 
     hostname = sys.argv[1]
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 80
+    port = 80
+    run_perf = False
+
+    for arg in sys.argv[2:]:
+        if arg == "--perf":
+            run_perf = True
+        else:
+            try:
+                port = int(arg)
+            except ValueError:
+                pass
 
     client = GalacticUnicornClient(hostname, port)
 
     try:
         client.connect()
-        demo_animation(client)
+        if run_perf:
+            run_perf_tests(client)
+        else:
+            demo_animation(client)
     except KeyboardInterrupt:
         print("\nInterrupted by user")
     except Exception as e:

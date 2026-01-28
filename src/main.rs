@@ -11,7 +11,6 @@ mod buttons;
 mod clock_app;
 mod config;
 mod display;
-mod draw_app;
 mod draw_protocol;
 mod effects_app;
 mod fonts;
@@ -91,7 +90,6 @@ async fn main(spawner: Spawner) {
     let clock_app = clock_app::ClockAppState::new(display_state, time);
     let effects_app = effects_app::EffectsApp::new();
     let mqtt_app = mqtt_app::MqttApp::new(display_state);
-    let draw_app = draw_app::DrawApp::new(system_state, display_state);
     let web_app = web_app::WebApp::new(display_state);
 
     // Button channel: 4 capacity, 1 subscriber (AppController), 9 publishers (button tasks)
@@ -111,7 +109,6 @@ async fn main(spawner: Spawner) {
         clock_app,
         effects_app,
         mqtt_app,
-        draw_app,
         web_app,
         BUTTON_CHANNEL.subscriber().unwrap(),
         MQTT_APP_CHANNEL.subscriber().unwrap(),
@@ -215,19 +212,6 @@ async fn main(spawner: Spawner) {
             MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
-
-    // spawner
-    //     .spawn(app::process_mqtt_messages_task(
-    //         app_controller,
-    //         MQTT_APP_CHANNEL.subscriber().unwrap(),
-    //     ))
-    //     .unwrap();
-
-    // spawner
-    //     .spawn(system::process_mqtt_messages_task(
-    //         MQTT_SYSTEM_CHANNEL.subscriber().unwrap(),
-    //     ))
-    //     .unwrap();
 
     spawner
         .spawn(mqtt::homeassistant::hass_discovery_task(

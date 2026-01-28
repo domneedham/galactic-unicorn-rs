@@ -37,6 +37,7 @@
         <div id="info">
             <p>Display: 53x11 pixels</p>
             <p>Click or drag to draw on the canvas</p>
+            <p>Hold Shift while drawing for straight lines (horizontal/vertical)</p>
         </div>
     </div>
 </body>
@@ -95,11 +96,27 @@
         let currentBrushSize = 1;
         let pixelBuffer = [];
         let sendTimer = null;
+        let isShiftPressed = false;
+        let drawStartX = null;
+        let drawStartY = null;
 
         // Update brush size display
         brushSize.addEventListener('input', () => {
             currentBrushSize = parseInt(brushSize.value);
             brushSizeValue.textContent = currentBrushSize;
+        });
+
+        // Keyboard events for Shift key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Shift') {
+                isShiftPressed = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'Shift') {
+                isShiftPressed = false;
+            }
         });
 
         // Color picker
@@ -189,6 +206,25 @@
             sendTimer = setTimeout(flushPixels, 16); // ~60fps
         }
 
+        // Constrain coordinates to straight line (horizontal or vertical)
+        function constrainToStraightLine(x, y, startX, startY) {
+            if (startX === null || startY === null) {
+                return { x, y };
+            }
+
+            const dx = Math.abs(x - startX);
+            const dy = Math.abs(y - startY);
+
+            // Choose horizontal or vertical based on which distance is greater
+            if (dx > dy) {
+                // Horizontal line
+                return { x, y: startY };
+            } else {
+                // Vertical line
+                return { x: startX, y };
+            }
+        }
+
         // Draw with brush
         function drawWithBrush(x, y) {
             const offset = Math.floor(currentBrushSize / 2);
@@ -207,6 +243,11 @@
             const scaleY = rect.height / DISPLAY_HEIGHT;
             const x = Math.floor((e.clientX - rect.left) / scaleX);
             const y = Math.floor((e.clientY - rect.top) / scaleY);
+
+            // Store starting position for straight line drawing
+            drawStartX = x;
+            drawStartY = y;
+
             console.log('Mouse down at display coords:', x, y);
             drawWithBrush(x, y);
         });
@@ -216,19 +257,31 @@
             const rect = canvas.getBoundingClientRect();
             const scaleX = rect.width / DISPLAY_WIDTH;
             const scaleY = rect.height / DISPLAY_HEIGHT;
-            const x = Math.floor((e.clientX - rect.left) / scaleX);
-            const y = Math.floor((e.clientY - rect.top) / scaleY);
+            let x = Math.floor((e.clientX - rect.left) / scaleX);
+            let y = Math.floor((e.clientY - rect.top) / scaleY);
+
+            // Apply straight line constraint if Shift is pressed
+            if (isShiftPressed) {
+                const constrained = constrainToStraightLine(x, y, drawStartX, drawStartY);
+                x = constrained.x;
+                y = constrained.y;
+            }
+
             drawWithBrush(x, y);
         });
 
         canvas.addEventListener('mouseup', () => {
             isDrawing = false;
+            drawStartX = null;
+            drawStartY = null;
             flushPixels();
         });
 
         canvas.addEventListener('mouseleave', () => {
             if (isDrawing) {
                 isDrawing = false;
+                drawStartX = null;
+                drawStartY = null;
                 flushPixels();
             }
         });
@@ -243,6 +296,11 @@
             const touch = e.touches[0];
             const x = Math.floor((touch.clientX - rect.left) / scaleX);
             const y = Math.floor((touch.clientY - rect.top) / scaleY);
+
+            // Store starting position for straight line drawing
+            drawStartX = x;
+            drawStartY = y;
+
             drawWithBrush(x, y);
         });
 
@@ -253,14 +311,24 @@
             const scaleX = rect.width / DISPLAY_WIDTH;
             const scaleY = rect.height / DISPLAY_HEIGHT;
             const touch = e.touches[0];
-            const x = Math.floor((touch.clientX - rect.left) / scaleX);
-            const y = Math.floor((touch.clientY - rect.top) / scaleY);
+            let x = Math.floor((touch.clientX - rect.left) / scaleX);
+            let y = Math.floor((touch.clientY - rect.top) / scaleY);
+
+            // Apply straight line constraint if Shift is pressed
+            if (isShiftPressed) {
+                const constrained = constrainToStraightLine(x, y, drawStartX, drawStartY);
+                x = constrained.x;
+                y = constrained.y;
+            }
+
             drawWithBrush(x, y);
         });
 
         canvas.addEventListener('touchend', (e) => {
             e.preventDefault();
             isDrawing = false;
+            drawStartX = null;
+            drawStartY = null;
             flushPixels();
         });
 
