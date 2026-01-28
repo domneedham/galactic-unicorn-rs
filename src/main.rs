@@ -12,6 +12,7 @@ mod clock_app;
 mod config;
 mod display;
 mod draw_app;
+mod draw_protocol;
 mod effects_app;
 mod fonts;
 mod mqtt;
@@ -21,6 +22,7 @@ mod system;
 mod system_app;
 mod time;
 mod web;
+mod web_app;
 
 use buttons::ButtonPress;
 use display::{Display, DisplayState};
@@ -90,6 +92,7 @@ async fn main(spawner: Spawner) {
     let effects_app = effects_app::EffectsApp::new();
     let mqtt_app = mqtt_app::MqttApp::new(display_state);
     let draw_app = draw_app::DrawApp::new(system_state, display_state);
+    let web_app = web_app::WebApp::new(display_state);
 
     // Button channel: 4 capacity, 1 subscriber (AppController), 9 publishers (button tasks)
     static BUTTON_CHANNEL: PubSubChannel<
@@ -109,6 +112,7 @@ async fn main(spawner: Spawner) {
         effects_app,
         mqtt_app,
         draw_app,
+        web_app,
         BUTTON_CHANNEL.subscriber().unwrap(),
         MQTT_APP_CHANNEL.subscriber().unwrap(),
         spawner,

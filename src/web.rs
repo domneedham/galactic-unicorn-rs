@@ -1,9 +1,12 @@
 use embassy_time::Duration;
+use heapless::Vec;
 use picoserve::{
     response::ws,
     routing::{get, get_service},
     AppBuilder, AppRouter,
 };
+
+use crate::web_app::{WS_CONNECTED, WS_DATA_CHANNEL, WS_DISCONNECTED};
 
 pub struct WebAppProps;
 
@@ -36,6 +39,12 @@ impl AppBuilder for WebAppProps {
                     upgrade.on_upgrade(WebsocketEcho).with_protocol("echo")
                 }),
             )
+            .route(
+                "/draw",
+                get(async |upgrade: picoserve::response::WebSocketUpgrade| {
+                    upgrade.on_upgrade(WebsocketDraw)
+                }),
+            )
     }
 }
 
@@ -50,8 +59,8 @@ pub async fn web_task(app: &'static AppRouter<WebAppProps>) -> ! {
     let mut http_buffer = [0; 2048];
 
     let config = picoserve::Config::new(picoserve::Timeouts {
-        start_read_request: Some(Duration::from_secs(5)),
-        persistent_start_read_request: Some(Duration::from_secs(1)),
+        start_read_request: Some(Duration::from_secs(2)),
+        persistent_start_read_request: Some(Duration::from_millis(500)),
         read_request: Some(Duration::from_secs(1)),
         write: Some(Duration::from_secs(1)),
     })
@@ -96,5 +105,54 @@ impl ws::WebSocketCallback for WebsocketEcho {
         };
 
         tx.close(close_reason).await
+    }
+}
+
+pub struct WebsocketDraw;
+
+impl ws::WebSocketCallback for WebsocketDraw {
+    async fn run<R: picoserve::io::Read, W: picoserve::io::Write<Error = R::Error>>(
+        self,
+        mut rx: ws::SocketRx<R>,
+        mut tx: ws::SocketTx<W>,
+    ) -> Result<(), W::Error> {
+        // Signal connection - this triggers app switch
+        WS_CONNECTED.signal(());
+
+        let mut buffer = [0u8; 2048];
+        loop {
+            match rx
+                .next_message(&mut buffer, core::future::pending())
+                .await?
+                .ignore_never_b()
+            {
+                Ok(ws::Message::Binary(data)) => {
+                    // Forward raw bytes to WebAppRunner
+                    let mut vec = Vec::new();
+                    if vec.extend_from_slice(data).is_err() {
+                        log::warn!("WebSocket draw: message too large, dropping");
+                    } else {
+                        WS_DATA_CHANNEL.send(vec).await;
+                    }
+                }
+                Ok(ws::Message::Close(reason)) => {
+                    log::info!("WebSocket draw close: {reason:?}");
+                    break;
+                }
+                Ok(ws::Message::Ping(data)) => tx.send_pong(data).await?,
+                Ok(ws::Message::Text(_)) => {
+                    // Ignore text messages - we only handle binary
+                    log::warn!("WebSocket draw: received text message, ignoring");
+                }
+                Ok(ws::Message::Pong(_)) => continue,
+                Err(error) => {
+                    log::error!("WebSocket draw error: {error:?}");
+                    break;
+                }
+            }
+        }
+
+        WS_DISCONNECTED.signal(());
+        tx.close(None).await
     }
 }

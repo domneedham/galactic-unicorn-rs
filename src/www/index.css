@@ -1,9 +1,252 @@
-body {
-    display: flex;
-    flex-flow: column nowrap;
-    align-items: center;
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
 }
 
-body>* {
-    margin: 1em;
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #333;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+}
+
+#app {
+    background: white;
+    border-radius: 16px;
+    padding: 30px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    max-width: 1200px;
+    width: 100%;
+}
+
+h1 {
+    text-align: center;
+    color: #667eea;
+    margin-bottom: 20px;
+    font-size: 28px;
+}
+
+#status {
+    text-align: center;
+    padding: 10px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+#status.connecting {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+#status.connected {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+#status.disconnected {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+#status.error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+#controls {
+    margin-bottom: 20px;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    margin-bottom: 15px;
+    gap: 10px;
+}
+
+.control-group label {
+    font-weight: 600;
+    min-width: 100px;
+}
+
+#colorPicker {
+    width: 60px;
+    height: 40px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+#brushSize {
+    flex: 1;
+    height: 8px;
+    border-radius: 4px;
+    outline: none;
+    -webkit-appearance: none;
+    background: #e5e7eb;
+}
+
+#brushSize::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #667eea;
+    cursor: pointer;
+}
+
+#brushSize::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #667eea;
+    cursor: pointer;
+    border: none;
+}
+
+#brushSizeValue {
+    min-width: 20px;
+    text-align: center;
+    font-weight: 600;
+    color: #667eea;
+}
+
+.button-group {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+button {
+    flex: 1;
+    padding: 12px 20px;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+button:hover {
+    background: #5568d3;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+#canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 3px solid #e5e7eb;
+    border-radius: 8px;
+    cursor: crosshair;
+    margin-bottom: 20px;
+    background: #000;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+
+#info {
+    text-align: center;
+    color: #6b7280;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+#info p {
+    margin: 5px 0;
+}
+
+/* Tablet and larger - improve spacing */
+@media (min-width: 768px) {
+    h1 {
+        font-size: 32px;
+    }
+
+    #app {
+        padding: 40px;
+    }
+}
+
+/* Desktop layout - side-by-side controls and canvas */
+@media (min-width: 900px) {
+    #main-content {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 30px;
+        align-items: start;
+    }
+
+    #controls {
+        margin-bottom: 0;
+    }
+
+    .control-group {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .control-group label {
+        min-width: auto;
+        margin-bottom: 8px;
+        font-size: 15px;
+    }
+
+    #colorPicker {
+        width: 100%;
+        height: 50px;
+    }
+
+    .button-group {
+        flex-direction: column;
+    }
+
+    button {
+        padding: 14px 20px;
+        font-size: 15px;
+    }
+
+    #canvas {
+        margin-bottom: 0;
+        max-height: 550px;
+        height: auto;
+    }
+}
+
+/* Mobile layout */
+@media (max-width: 767px) {
+    #app {
+        padding: 20px;
+    }
+
+    h1 {
+        font-size: 24px;
+    }
+
+    .control-group {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .control-group label {
+        min-width: auto;
+    }
+
+    .button-group {
+        flex-direction: column;
+    }
 }

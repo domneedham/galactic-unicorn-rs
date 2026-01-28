@@ -26,6 +26,7 @@ use crate::mqtt_app::{MqttApp, MqttAppRunner};
 use crate::network::NetworkState;
 use crate::system::{SystemState, STATE_CHANGED};
 use crate::system_app::{SystemApp, SystemAppRunner};
+use crate::web_app::{WebApp, WebAppRunner};
 
 // Signal to tell hardware which buffer to render
 #[derive(Clone, Copy, PartialEq)]
@@ -38,7 +39,7 @@ pub static ACTIVE_LAYER: Watch<ThreadModeRawMutex, DisplayLayer, 2> = Watch::new
 /// All apps that can be switched to.
 #[derive(Copy, Clone, PartialEq, Eq, EnumString, IntoStaticStr)]
 #[strum(ascii_case_insensitive)]
-enum Apps {
+pub enum Apps {
     /// The system app. This should only be changed to by the system.
     System,
 
@@ -53,6 +54,9 @@ enum Apps {
 
     /// The draw app.
     Draw,
+
+    /// The web app (WebSocket draw).
+    Web,
 }
 
 pub struct AppRunnerInboxSubscribers {
@@ -72,6 +76,7 @@ pub enum AppRunner {
     Effects(EffectsAppRunner),
     Mqtt(MqttAppRunner),
     Draw(DrawAppRunner),
+    Web(WebAppRunner),
 }
 
 impl AppRunner {
@@ -82,6 +87,7 @@ impl AppRunner {
             AppRunner::Effects(runner) => runner.run().await,
             AppRunner::Mqtt(runner) => runner.run().await,
             AppRunner::Draw(runner) => runner.run().await,
+            AppRunner::Web(runner) => runner.run().await,
         }
     }
 
@@ -92,6 +98,7 @@ impl AppRunner {
             AppRunner::Effects(runner) => runner.release_writer(),
             AppRunner::Mqtt(runner) => runner.release_writer(),
             AppRunner::Draw(runner) => runner.release_writer(),
+            AppRunner::Web(runner) => runner.release_writer(),
         }
     }
 }
@@ -112,7 +119,7 @@ pub trait UnicornAppRunner {
     fn release_writer(self) -> GraphicsBufferWriter;
 }
 
-static CHANGE_APP_SIGNAL: Signal<ThreadModeRawMutex, Apps> = Signal::new();
+pub static CHANGE_APP_SIGNAL: Signal<ThreadModeRawMutex, Apps> = Signal::new();
 
 /// Task that monitors network state and switches from System app to Clock app
 /// when network connects for the first time.
@@ -164,6 +171,9 @@ pub struct AppController {
     /// Draw app.
     draw_app: &'static DrawApp,
 
+    /// Web app.
+    web_app: &'static WebApp,
+
     // The Baton - the graphics writer passed between app runners
     // Wrapped in Mutex for interior mutability since AppController is &'static
     graphics_writer: Mutex<ThreadModeRawMutex, Option<GraphicsBufferWriter>>,
@@ -199,6 +209,7 @@ impl AppController {
         effects_app: &'static EffectsApp,
         mqtt_app: &'static MqttApp,
         draw_app: &'static DrawApp,
+        web_app: &'static WebApp,
         btn_rx: Subscriber<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
         mqtt_rx: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         spawner: Spawner,
@@ -258,6 +269,7 @@ impl AppController {
             effects_app,
             mqtt_app,
             draw_app,
+            web_app,
             graphics_writer: Mutex::new(Some(app_writer)),
             notification_writer: Mutex::new(notification_writer),
             btn_rx: Mutex::new(btn_rx),
@@ -324,14 +336,20 @@ impl AppController {
                         .create_runner(writer, inbox, Signal::new())
                         .await
                 }
+                Apps::Web => {
+                    self.web_app
+                        .create_runner(writer, inbox, Signal::new())
+                        .await
+                }
             };
 
             // 2. Drive the App and the Forwarder
             // If forward_and_intercept returns SwitchApp, the whole select finishes
-            let result = embassy_futures::select::select3(
+            let result = embassy_futures::select::select4(
                 runner.run(),
                 self.handle_events(),
                 CHANGE_APP_SIGNAL.wait(),
+                crate::web_app::WS_DISCONNECTED.wait(),
             )
             .await;
 
@@ -339,27 +357,44 @@ impl AppController {
             // Because DrawAppRunner is dropped here, all its futures stop
             *self.graphics_writer.lock().await = Some(runner.release_writer());
 
-            // Update active_app if CHANGE_APP_SIGNAL fired
-            if let embassy_futures::select::Either3::Third(new_app) = result {
-                *self.active_app.lock().await = new_app;
-                self.send_mqtt_states().await;
+            // Update active_app based on which signal fired
+            match result {
+                embassy_futures::select::Either4::Third(new_app) => {
+                    // CHANGE_APP_SIGNAL fired - switch to requested app
+                    *self.active_app.lock().await = new_app;
+                    self.send_mqtt_states().await;
+                }
+                embassy_futures::select::Either4::Fourth(_) => {
+                    // WS_DISCONNECTED fired - restore previous app
+                    let previous_app = crate::web_app::take_previous_app().await;
+                    *self.active_app.lock().await = previous_app;
+                    self.send_mqtt_states().await;
+                }
+                _ => {}
             }
         }
     }
 
     async fn handle_events(&self) -> ! {
         loop {
-            match select(
+            match embassy_futures::select::select3(
                 self.btn_rx.lock().await.next_message_pure(),
                 self.mqtt_rx.lock().await.next_message_pure(),
+                crate::web_app::WS_CONNECTED.wait(),
             )
             .await
             {
-                Either::First((button, press)) => {
+                embassy_futures::select::Either3::First((button, press)) => {
                     self.handle_button_event(button, press).await;
                 }
-                Either::Second(msg) => {
+                embassy_futures::select::Either3::Second(msg) => {
                     self.handle_mqtt_event(msg).await;
+                }
+                embassy_futures::select::Either3::Third(_) => {
+                    // WebSocket connected - store current app and switch to Web
+                    let current_app = *self.active_app.lock().await;
+                    crate::web_app::store_previous_app(current_app).await;
+                    CHANGE_APP_SIGNAL.signal(Apps::Web);
                 }
             }
         }
@@ -417,8 +452,8 @@ impl AppController {
 
             // For other apps, decide if we should show as notification
             let should_show = match active_app {
-                Apps::Draw => {
-                    // Draw app denies normal notifications when actively being used
+                Apps::Draw | Apps::Web => {
+                    // Draw and Web apps deny normal notifications when actively being used
                     false
                 }
                 _ => true, // All other apps allow notifications

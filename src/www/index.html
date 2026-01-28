@@ -4,20 +4,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Websockets</title>
+    <title>Galactic Unicorn Draw</title>
 </head>
 
 <body>
-    <div>
-        Messages sent will be echoed back to the client
+    <div id="app">
+        <h1>Galactic Unicorn Draw</h1>
+        <div id="status">Connecting...</div>
+
+        <div id="main-content">
+            <div id="controls">
+            <div class="control-group">
+                <label>Color:</label>
+                <input type="color" id="colorPicker" value="#ff0000">
+            </div>
+
+            <div class="control-group">
+                <label>Brush Size:</label>
+                <input type="range" id="brushSize" min="1" max="5" value="1">
+                <span id="brushSizeValue">1</span>
+            </div>
+
+            <div class="button-group">
+                <button id="clearBtn">Clear Display</button>
+                <button id="fillBtn">Fill Display</button>
+            </div>
+            </div>
+
+            <canvas id="canvas" width="530" height="110"></canvas>
+        </div>
+
+        <div id="info">
+            <p>Display: 53x11 pixels</p>
+            <p>Click or drag to draw on the canvas</p>
+        </div>
     </div>
-    <input type="text">
-    <button type="button">Send</button>
-    <ul id="output"></ul>
 </body>
 
 <script>
-    // Load CSS first, then JS, to avoid parallel requests
+    // Load CSS after DOM
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            await loadCSS('index.css');
+            initApp();
+        } catch (err) {
+            console.error('Failed to load resources:', err);
+            initApp();
+        }
+    });
+
     function loadCSS(href) {
         return new Promise((resolve, reject) => {
             const link = document.createElement('link');
@@ -29,71 +64,229 @@
         });
     }
 
-    function loadJS(src) {
-        return new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            script.src = src;
-            script.onload = () => resolve();
-            script.onerror = () => reject(new Error(`Failed to load JS: ${src}`));
-            document.body.appendChild(script);
-        });
-    }
-
-    // Load resources sequentially after DOM is ready
-    document.addEventListener('DOMContentLoaded', async () => {
-        try {
-            // Load CSS first
-            await loadCSS('index.css');
-            // Then load external JS if needed
-            // await loadJS('index.js');
-
-            // Initialize app after resources loaded
-            initApp();
-        } catch (err) {
-            console.error('Failed to load resources:', err);
-            initApp(); // Still try to initialize
-        }
-    });
-
     function initApp() {
-        let input = document.getElementsByTagName("input")[0];
-        let output = document.getElementById("output");
-        let button = document.getElementsByTagName("button")[0];
+        // Protocol constants
+        const VERSION = 0x01;
+        const CMD_CLEAR = 0x00;
+        const CMD_SET_PIXEL = 0x01;
+        const CMD_SET_PIXELS = 0x02;
+        const CMD_FILL = 0x03;
+        const CMD_PING = 0xFE;
 
-        input.addEventListener("input", function () {
-            button.disabled = !input.value;
+        // Display dimensions
+        const DISPLAY_WIDTH = 53;
+        const DISPLAY_HEIGHT = 11;
+        const SCALE = 10;
+
+        // Elements
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const colorPicker = document.getElementById('colorPicker');
+        const brushSize = document.getElementById('brushSize');
+        const brushSizeValue = document.getElementById('brushSizeValue');
+        const clearBtn = document.getElementById('clearBtn');
+        const fillBtn = document.getElementById('fillBtn');
+        const statusDiv = document.getElementById('status');
+
+        // State
+        let ws = null;
+        let isDrawing = false;
+        let currentColor = { r: 255, g: 0, b: 0 };
+        let currentBrushSize = 1;
+        let pixelBuffer = [];
+        let sendTimer = null;
+
+        // Update brush size display
+        brushSize.addEventListener('input', () => {
+            currentBrushSize = parseInt(brushSize.value);
+            brushSizeValue.textContent = currentBrushSize;
         });
 
-        const currentPath = window.location.pathname;
-
-        let websocketUri = (window.location.protocol === "https:") ? "wss:" : "ws:";
-        websocketUri += "//" + window.location.host;
-        websocketUri += currentPath.slice(0, currentPath.lastIndexOf("/") + 1) + "ws";
-
-        let ws = new WebSocket(websocketUri, ["echo", "ignored_protocol"]);
-
-        ws.addEventListener("close", function (ev) {
-            ws.close();
-            output.innerText = `Websockets Closed: ${ev.reason} (${ev.code})`;
-        })
-
-        ws.addEventListener("error", function (ev) {
-            ws.close();
-            console.error(ev);
-            output.innerText = "Websockets Error";
+        // Color picker
+        colorPicker.addEventListener('input', () => {
+            const hex = colorPicker.value;
+            currentColor.r = parseInt(hex.substr(1, 2), 16);
+            currentColor.g = parseInt(hex.substr(3, 2), 16);
+            currentColor.b = parseInt(hex.substr(5, 2), 16);
         });
 
-        ws.addEventListener("message", function (ev) {
-            let message = document.createElement("li");
-            message.innerText = ev.data;
-            output.appendChild(message);
+        // Initialize canvas
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // WebSocket connection
+        function connect() {
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const wsUrl = `${protocol}//${window.location.host}/draw`;
+
+            statusDiv.textContent = 'Connecting...';
+            statusDiv.className = 'connecting';
+
+            ws = new WebSocket(wsUrl);
+            ws.binaryType = 'arraybuffer';
+
+            ws.addEventListener('open', () => {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'connected';
+                console.log('WebSocket connected');
+            });
+
+            ws.addEventListener('close', () => {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'disconnected';
+                console.log('WebSocket closed');
+                // Reconnect after 2 seconds
+                setTimeout(connect, 2000);
+            });
+
+            ws.addEventListener('error', (err) => {
+                statusDiv.textContent = 'Connection Error';
+                statusDiv.className = 'error';
+                console.error('WebSocket error:', err);
+            });
+        }
+
+        // Send command to device
+        function sendCommand(bytes) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                console.log('Sending', bytes.length, 'bytes');
+                ws.send(new Uint8Array(bytes));
+            } else {
+                console.warn('WebSocket not ready, readyState:', ws ? ws.readyState : 'null');
+            }
+        }
+
+        // Batch send pixels
+        function flushPixels() {
+            if (pixelBuffer.length === 0) return;
+
+            // Send as individual SET_PIXEL commands (they batch on device)
+            const bytes = [];
+            for (const pixel of pixelBuffer) {
+                bytes.push(VERSION, CMD_SET_PIXEL, pixel.x, pixel.y, pixel.r, pixel.g, pixel.b);
+            }
+            sendCommand(bytes);
+            pixelBuffer = [];
+        }
+
+        // Draw pixel on canvas and queue for sending
+        function drawPixel(x, y) {
+            if (x < 0 || x >= DISPLAY_WIDTH || y < 0 || y >= DISPLAY_HEIGHT) {
+                return;
+            }
+
+            // Draw on canvas (use canvas internal size)
+            const scaleX = canvas.width / DISPLAY_WIDTH;
+            const scaleY = canvas.height / DISPLAY_HEIGHT;
+            ctx.fillStyle = `rgb(${currentColor.r}, ${currentColor.g}, ${currentColor.b})`;
+            ctx.fillRect(x * scaleX, y * scaleY, scaleX, scaleY);
+
+            // Queue for sending
+            pixelBuffer.push({ x, y, ...currentColor });
+
+            // Debounce sending
+            if (sendTimer) clearTimeout(sendTimer);
+            sendTimer = setTimeout(flushPixels, 16); // ~60fps
+        }
+
+        // Draw with brush
+        function drawWithBrush(x, y) {
+            const offset = Math.floor(currentBrushSize / 2);
+            for (let dx = -offset; dx <= offset; dx++) {
+                for (let dy = -offset; dy <= offset; dy++) {
+                    drawPixel(x + dx, y + dy);
+                }
+            }
+        }
+
+        // Canvas mouse events
+        canvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = rect.width / DISPLAY_WIDTH;
+            const scaleY = rect.height / DISPLAY_HEIGHT;
+            const x = Math.floor((e.clientX - rect.left) / scaleX);
+            const y = Math.floor((e.clientY - rect.top) / scaleY);
+            console.log('Mouse down at display coords:', x, y);
+            drawWithBrush(x, y);
         });
 
-        button.addEventListener("click", function () {
-            ws.send(input.value);
-
-            input.value = "";
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = rect.width / DISPLAY_WIDTH;
+            const scaleY = rect.height / DISPLAY_HEIGHT;
+            const x = Math.floor((e.clientX - rect.left) / scaleX);
+            const y = Math.floor((e.clientY - rect.top) / scaleY);
+            drawWithBrush(x, y);
         });
+
+        canvas.addEventListener('mouseup', () => {
+            isDrawing = false;
+            flushPixels();
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            if (isDrawing) {
+                isDrawing = false;
+                flushPixels();
+            }
+        });
+
+        // Touch events for mobile
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            isDrawing = true;
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = rect.width / DISPLAY_WIDTH;
+            const scaleY = rect.height / DISPLAY_HEIGHT;
+            const touch = e.touches[0];
+            const x = Math.floor((touch.clientX - rect.left) / scaleX);
+            const y = Math.floor((touch.clientY - rect.top) / scaleY);
+            drawWithBrush(x, y);
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (!isDrawing) return;
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = rect.width / DISPLAY_WIDTH;
+            const scaleY = rect.height / DISPLAY_HEIGHT;
+            const touch = e.touches[0];
+            const x = Math.floor((touch.clientX - rect.left) / scaleX);
+            const y = Math.floor((touch.clientY - rect.top) / scaleY);
+            drawWithBrush(x, y);
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            isDrawing = false;
+            flushPixels();
+        });
+
+        // Clear button
+        clearBtn.addEventListener('click', () => {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            sendCommand([VERSION, CMD_CLEAR]);
+        });
+
+        // Fill button
+        fillBtn.addEventListener('click', () => {
+            ctx.fillStyle = `rgb(${currentColor.r}, ${currentColor.g}, ${currentColor.b})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            sendCommand([VERSION, CMD_FILL, currentColor.r, currentColor.g, currentColor.b]);
+        });
+
+        // Start connection
+        connect();
+
+        // Ping every 30 seconds to keep connection alive
+        setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                sendCommand([VERSION, CMD_PING]);
+            }
+        }, 30000);
     }
 </script>
 
