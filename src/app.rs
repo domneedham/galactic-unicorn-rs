@@ -14,6 +14,7 @@ use strum_macros::{EnumString, IntoStaticStr};
 use crate::buttons::ButtonPress;
 use crate::clock_app::{ClockAppRunner, ClockAppState};
 use crate::display::{Display, DisplayState, GraphicsBuffer, GraphicsBufferWriter};
+use crate::draw_app::{DrawApp, DrawAppRunner};
 use crate::effects_app::{EffectsApp, EffectsAppRunner};
 use crate::mqtt::topics::APP_STATE_TOPIC;
 use crate::mqtt::{
@@ -24,7 +25,6 @@ use crate::mqtt_app::{MqttApp, MqttAppRunner};
 use crate::network::NetworkState;
 use crate::system::{SystemState, STATE_CHANGED};
 use crate::system_app::{SystemApp, SystemAppRunner};
-use crate::web_app::{WebApp, WebAppRunner};
 
 // Signal to tell hardware which buffer to render
 #[derive(Clone, Copy, PartialEq)]
@@ -50,8 +50,8 @@ pub enum Apps {
     /// The MQTT app.
     Mqtt,
 
-    /// The web app (WebSocket draw).
-    Web,
+    /// The draw app (WebSocket draw).
+    Draw,
 }
 
 pub struct AppRunnerInboxSubscribers {
@@ -70,7 +70,7 @@ pub enum AppRunner {
     Clock(ClockAppRunner),
     Effects(EffectsAppRunner),
     Mqtt(MqttAppRunner),
-    Web(WebAppRunner),
+    Draw(DrawAppRunner),
 }
 
 impl AppRunner {
@@ -80,7 +80,7 @@ impl AppRunner {
             AppRunner::Clock(runner) => runner.run().await,
             AppRunner::Effects(runner) => runner.run().await,
             AppRunner::Mqtt(runner) => runner.run().await,
-            AppRunner::Web(runner) => runner.run().await,
+            AppRunner::Draw(runner) => runner.run().await,
         }
     }
 
@@ -90,7 +90,7 @@ impl AppRunner {
             AppRunner::Clock(runner) => runner.release_writer(),
             AppRunner::Effects(runner) => runner.release_writer(),
             AppRunner::Mqtt(runner) => runner.release_writer(),
-            AppRunner::Web(runner) => runner.release_writer(),
+            AppRunner::Draw(runner) => runner.release_writer(),
         }
     }
 }
@@ -101,7 +101,6 @@ pub trait UnicornApp {
         &'static self,
         graphics_buffer: GraphicsBufferWriter,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> AppRunner;
 }
 
@@ -112,6 +111,21 @@ pub trait UnicornAppRunner {
 }
 
 pub static CHANGE_APP_SIGNAL: Signal<ThreadModeRawMutex, Apps> = Signal::new();
+/// Shared notification policy state. Apps signal their policy here when they start running.
+pub static NOTIFICATION_POLICY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+impl AppNotificationPolicy {
+    pub fn set(policy: Self) {
+        NOTIFICATION_POLICY.store(policy as u8, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn get() -> Self {
+        match NOTIFICATION_POLICY.load(core::sync::atomic::Ordering::Relaxed) {
+            1 => Self::DenyNormal,
+            _ => Self::AllowAll,
+        }
+    }
+}
 
 /// Task that monitors network state and switches from System app to Clock app
 /// when network connects for the first time.
@@ -160,8 +174,8 @@ pub struct AppController {
     /// MQTT app.
     mqtt_app: &'static MqttApp,
 
-    /// Web app.
-    web_app: &'static WebApp,
+    /// Draw app.
+    draw_app: &'static DrawApp,
 
     // The Baton - the graphics writer passed between app runners
     // Wrapped in Mutex for interior mutability since AppController is &'static
@@ -197,7 +211,7 @@ impl AppController {
         clock_app: &'static ClockAppState,
         effects_app: &'static EffectsApp,
         mqtt_app: &'static MqttApp,
-        web_app: &'static WebApp,
+        draw_app: &'static DrawApp,
         btn_rx: Subscriber<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9>,
         mqtt_rx: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         spawner: Spawner,
@@ -256,7 +270,7 @@ impl AppController {
             clock_app,
             effects_app,
             mqtt_app,
-            web_app,
+            draw_app,
             graphics_writer: Mutex::new(Some(app_writer)),
             notification_writer: Mutex::new(notification_writer),
             btn_rx: Mutex::new(btn_rx),
@@ -300,27 +314,27 @@ impl AppController {
             let mut runner = match *self.active_app.lock().await {
                 Apps::System => {
                     self.system_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
                 Apps::Clock => {
                     self.clock_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
                 Apps::Effects => {
                     self.effects_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
                 Apps::Mqtt => {
                     self.mqtt_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
-                Apps::Web => {
-                    self.web_app
-                        .create_runner(writer, inbox, Signal::new())
+                Apps::Draw => {
+                    self.draw_app
+                        .create_runner(writer, inbox)
                         .await
                 }
             };
@@ -331,7 +345,7 @@ impl AppController {
                 runner.run(),
                 self.handle_events(),
                 CHANGE_APP_SIGNAL.wait(),
-                crate::web_app::WS_DISCONNECTED.wait(),
+                crate::draw_app::wait_for_disconnection(),
             )
             .await;
 
@@ -348,7 +362,7 @@ impl AppController {
                 }
                 embassy_futures::select::Either4::Fourth(_) => {
                     // WS_DISCONNECTED fired - restore previous app
-                    let previous_app = crate::web_app::take_previous_app().await;
+                    let previous_app = crate::draw_app::take_previous_app().await;
                     *self.active_app.lock().await = previous_app;
                     self.send_mqtt_states().await;
                 }
@@ -362,7 +376,7 @@ impl AppController {
             match embassy_futures::select::select3(
                 self.btn_rx.lock().await.next_message_pure(),
                 self.mqtt_rx.lock().await.next_message_pure(),
-                crate::web_app::WS_CONNECTED.wait(),
+                crate::draw_app::wait_for_connection(),
             )
             .await
             {
@@ -373,10 +387,10 @@ impl AppController {
                     self.handle_mqtt_event(msg).await;
                 }
                 embassy_futures::select::Either3::Third(_) => {
-                    // WebSocket connected - store current app and switch to Web
+                    // WebSocket connected - store current app and switch to Draw
                     let current_app = *self.active_app.lock().await;
-                    crate::web_app::store_previous_app(current_app).await;
-                    CHANGE_APP_SIGNAL.signal(Apps::Web);
+                    crate::draw_app::store_previous_app(current_app).await;
+                    CHANGE_APP_SIGNAL.signal(Apps::Draw);
                 }
             }
         }
@@ -408,7 +422,7 @@ impl AppController {
             UnicornButtons::SwitchA => Apps::Clock,
             UnicornButtons::SwitchB => Apps::Effects,
             UnicornButtons::SwitchC => Apps::Mqtt,
-            UnicornButtons::SwitchD => Apps::Web,
+            UnicornButtons::SwitchD => Apps::Draw,
             _ => return,
         };
 
@@ -432,14 +446,8 @@ impl AppController {
                 return;
             }
 
-            // For other apps, decide if we should show as notification
-            let should_show = match active_app {
-                Apps::Web => {
-                    // Web app denies normal notifications when actively being used
-                    false
-                }
-                _ => true, // All other apps allow notifications
-            };
+            // For other apps, decide based on the active app's notification policy
+            let should_show = AppNotificationPolicy::get() == AppNotificationPolicy::AllowAll;
 
             if !should_show {
                 // Store the message but don't display it as notification

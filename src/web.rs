@@ -6,7 +6,13 @@ use picoserve::{
     AppBuilder, AppRouter,
 };
 
-use crate::web_app::{WS_CONNECTED, WS_DATA_CHANNEL, WS_DISCONNECTED};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
+use core::cell::Cell;
+
+use crate::draw_app::{WS_CONNECTION_STATE, WS_DATA_CHANNEL};
+
+static WS_ACTIVE: Mutex<CriticalSectionRawMutex, Cell<bool>> = Mutex::new(Cell::new(false));
 
 pub struct WebAppProps;
 
@@ -34,24 +40,20 @@ impl AppBuilder for WebAppProps {
                 ))),
             )
             .route(
-                "/ws",
-                get(async |upgrade: picoserve::response::WebSocketUpgrade| {
-                    upgrade.on_upgrade(WebsocketEcho).with_protocol("echo")
-                }),
-            )
-            .route(
                 "/draw",
                 get(async |upgrade: picoserve::response::WebSocketUpgrade| {
+                    log::info!("WebSocket draw: upgrade request received");
                     upgrade.on_upgrade(WebsocketDraw)
                 }),
             )
     }
 }
 
-#[embassy_executor::task]
-pub async fn web_task(app: &'static AppRouter<WebAppProps>) -> ! {
-    log::info!("Web server: Waiting for network...");
+#[embassy_executor::task(pool_size = 2)]
+pub async fn web_task(id: usize, app: &'static AppRouter<WebAppProps>) -> ! {
+    log::info!("Web server {}: Waiting for network...", id);
     let stack = crate::network::get_network_stack().await;
+    log::info!("Web server {}: Listening on port 80", id);
 
     let port = 80;
     let mut tcp_rx_buffer = [0; 1024];
@@ -63,49 +65,12 @@ pub async fn web_task(app: &'static AppRouter<WebAppProps>) -> ! {
         persistent_start_read_request: Some(Duration::from_millis(500)),
         read_request: Some(Duration::from_secs(1)),
         write: Some(Duration::from_secs(1)),
-    })
-    .keep_connection_alive();
+    });
 
     picoserve::Server::new(app, &config, &mut http_buffer)
-        .listen_and_serve(0, stack, port, &mut tcp_rx_buffer, &mut tcp_tx_buffer)
+        .listen_and_serve(id, stack, port, &mut tcp_rx_buffer, &mut tcp_tx_buffer)
         .await
         .into_never()
-}
-
-pub struct WebsocketEcho;
-
-impl ws::WebSocketCallback for WebsocketEcho {
-    async fn run<R: picoserve::io::Read, W: picoserve::io::Write<Error = R::Error>>(
-        self,
-        mut rx: ws::SocketRx<R>,
-        mut tx: ws::SocketTx<W>,
-    ) -> Result<(), W::Error> {
-        let mut buffer = [0; 1024];
-
-        let close_reason = loop {
-            match rx
-                .next_message(&mut buffer, core::future::pending())
-                .await?
-                .ignore_never_b()
-            {
-                Ok(ws::Message::Text(data)) => tx.send_text(data).await,
-                Ok(ws::Message::Binary(data)) => tx.send_binary(data).await,
-                Ok(ws::Message::Close(reason)) => {
-                    log::info!("Websocket close reason: {reason:?}");
-                    break None;
-                }
-                Ok(ws::Message::Ping(data)) => tx.send_pong(data).await,
-                Ok(ws::Message::Pong(_)) => continue,
-                Err(error) => {
-                    log::error!("Websocket Error: {error:?}");
-
-                    break Some((error.code(), "Websocket Error"));
-                }
-            }?;
-        };
-
-        tx.close(close_reason).await
-    }
 }
 
 pub struct WebsocketDraw;
@@ -116,8 +81,18 @@ impl ws::WebSocketCallback for WebsocketDraw {
         mut rx: ws::SocketRx<R>,
         mut tx: ws::SocketTx<W>,
     ) -> Result<(), W::Error> {
-        // Signal connection - this triggers app switch
-        WS_CONNECTED.signal(());
+        // Reject if another WebSocket is already active
+        let already_active = WS_ACTIVE.lock(|c| {
+            if c.get() { true } else { c.set(true); false }
+        });
+        if already_active {
+            log::warn!("WebSocket draw: already in use, rejecting");
+            return tx.close((1013u16, "Already in use")).await;
+        }
+
+        log::info!("WebSocket draw: connection accepted");
+        // Set connection state to true - this triggers app switch
+        WS_CONNECTION_STATE.sender().send(true);
 
         let mut buffer = [0u8; 2048];
         loop {
@@ -152,7 +127,9 @@ impl ws::WebSocketCallback for WebsocketDraw {
             }
         }
 
-        WS_DISCONNECTED.signal(());
+        // Set connection state to false on disconnect
+        WS_ACTIVE.lock(|c| c.set(false));
+        WS_CONNECTION_STATE.sender().send(false);
         tx.close(None).await
     }
 }

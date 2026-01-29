@@ -1,4 +1,3 @@
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
 use embassy_time::{Instant, Timer};
 use embedded_graphics::{
     geometry::Point,
@@ -10,7 +9,7 @@ use micromath::F32Ext;
 use static_cell::make_static;
 
 use crate::{
-    app::{AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
+    app::{AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
     display::{DisplayState, GraphicsBufferWriter, HEIGHT},
 };
 
@@ -32,13 +31,11 @@ impl UnicornApp for SystemApp {
         &'static self,
         graphics_buffer: GraphicsBufferWriter,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> AppRunner {
         AppRunner::System(SystemAppRunner::new(
             graphics_buffer,
             self,
             inbox,
-            notification_policy,
         ))
     }
 }
@@ -49,7 +46,6 @@ pub struct SystemAppRunner {
     state: &'static SystemApp,
     #[allow(dead_code)]
     inbox: AppRunnerInboxSubscribers,
-    notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
 impl<'a> SystemAppRunner {
@@ -57,13 +53,11 @@ impl<'a> SystemAppRunner {
         graphics_buffer: GraphicsBufferWriter,
         state: &'static SystemApp,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> Self {
         Self {
             graphics_buffer,
             state,
             inbox,
-            notification_policy,
         }
     }
 }
@@ -85,7 +79,7 @@ fn ease_out(t: f32) -> f32 {
 impl UnicornAppRunner for SystemAppRunner {
     async fn run(&mut self) -> ! {
         // Signal that this app is happy to be interrupted at all times
-        self.notification_policy.signal(AppNotificationPolicy::AllowAll);
+        crate::app::AppNotificationPolicy::set(crate::app::AppNotificationPolicy::AllowAll);
 
         let mut color_sub = self.state.display_state.color.receiver().unwrap();
         const ANIMATION_DURATION: f32 = 600.0;

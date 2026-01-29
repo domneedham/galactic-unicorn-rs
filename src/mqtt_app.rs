@@ -6,7 +6,7 @@ use heapless::String;
 use static_cell::make_static;
 
 use crate::{
-    app::{AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
+    app::{AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
     display::{DisplayState, GraphicsBufferWriter},
 };
 
@@ -54,14 +54,12 @@ impl UnicornApp for MqttApp {
         &'static self,
         graphics_buffer: GraphicsBufferWriter,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> AppRunner {
         self.is_active.store(true, Ordering::Relaxed);
         AppRunner::Mqtt(MqttAppRunner::new(
             graphics_buffer,
             self,
             inbox,
-            notification_policy,
         ))
     }
 }
@@ -72,7 +70,6 @@ pub struct MqttAppRunner {
     state: &'static MqttApp,
     #[allow(dead_code)]
     inbox: AppRunnerInboxSubscribers,
-    notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
 impl<'a> MqttAppRunner {
@@ -80,13 +77,11 @@ impl<'a> MqttAppRunner {
         graphics_buffer: GraphicsBufferWriter,
         state: &'static MqttApp,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> Self {
         Self {
             graphics_buffer,
             state,
             inbox,
-            notification_policy,
         }
     }
 }
@@ -94,7 +89,7 @@ impl<'a> MqttAppRunner {
 impl UnicornAppRunner for MqttAppRunner {
     async fn run(&mut self) -> ! {
         // Signal that this app is happy to be interrupted at all times
-        self.notification_policy.signal(AppNotificationPolicy::AllowAll);
+        crate::app::AppNotificationPolicy::set(crate::app::AppNotificationPolicy::AllowAll);
 
         loop {
             // Get the last message

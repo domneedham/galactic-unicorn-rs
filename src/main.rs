@@ -11,6 +11,7 @@ mod buttons;
 mod clock_app;
 mod config;
 mod display;
+mod draw_app;
 mod draw_protocol;
 mod effects_app;
 mod fonts;
@@ -21,7 +22,6 @@ mod system;
 mod system_app;
 mod time;
 mod web;
-mod web_app;
 
 use buttons::ButtonPress;
 use display::{Display, DisplayState};
@@ -90,7 +90,10 @@ async fn main(spawner: Spawner) {
     let clock_app = clock_app::ClockAppState::new(display_state, time);
     let effects_app = effects_app::EffectsApp::new();
     let mqtt_app = mqtt_app::MqttApp::new(display_state);
-    let web_app = web_app::WebApp::new(display_state);
+    let draw_app = draw_app::DrawApp::new(display_state);
+
+    // Initialize WebSocket connection state so wait_for_connection/disconnection work correctly
+    draw_app::WS_CONNECTION_STATE.sender().send(false);
 
     // Button channel: 4 capacity, 1 subscriber (AppController), 9 publishers (button tasks)
     static BUTTON_CHANNEL: PubSubChannel<
@@ -109,7 +112,7 @@ async fn main(spawner: Spawner) {
         clock_app,
         effects_app,
         mqtt_app,
-        web_app,
+        draw_app,
         BUTTON_CHANNEL.subscriber().unwrap(),
         MQTT_APP_CHANNEL.subscriber().unwrap(),
         spawner,
@@ -221,7 +224,8 @@ async fn main(spawner: Spawner) {
         .unwrap();
 
     let web_app = make_static!(AppRouter<WebAppProps>, WebAppProps.build_app());
-    spawner.must_spawn(web_task(web_app));
+    spawner.must_spawn(web_task(0, web_app));
+    spawner.must_spawn(web_task(1, web_app));
 
     app_controller.run().await;
 }

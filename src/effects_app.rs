@@ -1,12 +1,12 @@
 use embassy_futures::select::{select3, Either3};
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex, signal::Signal};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{Instant, Timer};
 use embedded_graphics::{geometry::Point, pixelcolor::Rgb888};
 use static_cell::make_static;
 
 use crate::{
     app::{
-        AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner,
+        AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner,
     },
     display::{GraphicsBufferWriter, HEIGHT, WIDTH},
 };
@@ -64,13 +64,11 @@ impl UnicornApp for EffectsApp {
         &'static self,
         graphics_buffer: GraphicsBufferWriter,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> AppRunner {
         AppRunner::Effects(EffectsAppRunner::new(
             graphics_buffer,
             self,
             inbox,
-            notification_policy,
         ))
     }
 }
@@ -80,7 +78,6 @@ pub struct EffectsAppRunner {
     graphics_buffer: GraphicsBufferWriter,
     state: &'static EffectsApp,
     inbox: AppRunnerInboxSubscribers,
-    notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
 impl<'a> EffectsAppRunner {
@@ -88,13 +85,11 @@ impl<'a> EffectsAppRunner {
         graphics_buffer: GraphicsBufferWriter,
         state: &'static EffectsApp,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> Self {
         Self {
             graphics_buffer,
             state,
             inbox,
-            notification_policy,
         }
     }
 
@@ -360,8 +355,7 @@ impl<'a> EffectsAppRunner {
 impl UnicornAppRunner for EffectsAppRunner {
     async fn run(&mut self) -> ! {
         // Signal that this app is happy to be interrupted at all times
-        self.notification_policy
-            .signal(AppNotificationPolicy::AllowAll);
+        crate::app::AppNotificationPolicy::set(crate::app::AppNotificationPolicy::AllowAll);
 
         loop {
             let effect = self.state.get_active_effect().await;

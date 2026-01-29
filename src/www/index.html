@@ -10,19 +10,45 @@
 <body>
     <div id="app">
         <h1>Galactic Unicorn Draw</h1>
-        <div id="status">Connecting...</div>
+        <div id="status">Loading...</div>
+        <button id="reconnectBtn" style="display:none;">Reconnect</button>
 
         <div id="main-content">
             <div id="controls">
             <div class="control-group">
-                <label>Color:</label>
+                <label>Color Picker:</label>
                 <input type="color" id="colorPicker" value="#ff0000">
+            </div>
+
+            <div class="control-group">
+                <label>Quick Colors:</label>
+                <div id="colorPalette">
+                    <button class="color-swatch" data-color="#ff0000" style="background: #ff0000;" title="Red"></button>
+                    <button class="color-swatch" data-color="#00ff00" style="background: #00ff00;" title="Green"></button>
+                    <button class="color-swatch" data-color="#0000ff" style="background: #0000ff;" title="Blue"></button>
+                    <button class="color-swatch" data-color="#ffff00" style="background: #ffff00;" title="Yellow"></button>
+                    <button class="color-swatch" data-color="#ff00ff" style="background: #ff00ff;" title="Magenta"></button>
+                    <button class="color-swatch" data-color="#00ffff" style="background: #00ffff;" title="Cyan"></button>
+                    <button class="color-swatch" data-color="#ffffff" style="background: #ffffff;" title="White"></button>
+                    <button class="color-swatch" data-color="#ff8800" style="background: #ff8800;" title="Orange"></button>
+                    <button class="color-swatch" data-color="#88ff00" style="background: #88ff00;" title="Lime"></button>
+                    <button class="color-swatch" data-color="#0088ff" style="background: #0088ff;" title="Sky Blue"></button>
+                    <button class="color-swatch" data-color="#ff0088" style="background: #ff0088;" title="Pink"></button>
+                    <button class="color-swatch" data-color="#8800ff" style="background: #8800ff;" title="Purple"></button>
+                </div>
             </div>
 
             <div class="control-group">
                 <label>Brush Size:</label>
                 <input type="range" id="brushSize" min="1" max="5" value="1">
                 <span id="brushSizeValue">1</span>
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="gridToggle" checked>
+                    Show Pixel Grid
+                </label>
             </div>
 
             <div class="button-group">
@@ -43,10 +69,12 @@
 </body>
 
 <script>
-    // Load CSS after DOM
-    document.addEventListener('DOMContentLoaded', async () => {
+    // Wait for all resources to fully load before initializing
+    window.addEventListener('load', async () => {
         try {
             await loadCSS('index.css');
+            // Small delay to ensure HTTP connection is fully closed
+            await new Promise(resolve => setTimeout(resolve, 100));
             initApp();
         } catch (err) {
             console.error('Failed to load resources:', err);
@@ -88,6 +116,9 @@
         const clearBtn = document.getElementById('clearBtn');
         const fillBtn = document.getElementById('fillBtn');
         const statusDiv = document.getElementById('status');
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        const gridToggle = document.getElementById('gridToggle');
+        const colorSwatches = document.querySelectorAll('.color-swatch');
 
         // State
         let ws = null;
@@ -99,6 +130,8 @@
         let isShiftPressed = false;
         let drawStartX = null;
         let drawStartY = null;
+        let showGrid = true;
+        let displayState = {}; // Stores all pixels currently on display
 
         // Update brush size display
         brushSize.addEventListener('input', () => {
@@ -127,41 +160,119 @@
             currentColor.b = parseInt(hex.substr(5, 2), 16);
         });
 
+        // Color swatches
+        colorSwatches.forEach(swatch => {
+            swatch.addEventListener('click', () => {
+                const hex = swatch.dataset.color;
+                colorPicker.value = hex;
+                currentColor.r = parseInt(hex.substr(1, 2), 16);
+                currentColor.g = parseInt(hex.substr(3, 2), 16);
+                currentColor.b = parseInt(hex.substr(5, 2), 16);
+
+                // Visual feedback
+                colorSwatches.forEach(s => s.classList.remove('selected'));
+                swatch.classList.add('selected');
+            });
+        });
+
+        // Grid toggle
+        gridToggle.addEventListener('change', () => {
+            showGrid = gridToggle.checked;
+            // Redraw canvas with or without grid
+            redrawCanvas();
+        });
+
+        // Draw grid overlay
+        function drawGrid() {
+            if (!showGrid) return;
+
+            const scaleX = canvas.width / DISPLAY_WIDTH;
+            const scaleY = canvas.height / DISPLAY_HEIGHT;
+
+            ctx.strokeStyle = 'rgba(128, 128, 128, 0.3)';
+            ctx.lineWidth = 1;
+
+            // Vertical lines
+            for (let x = 0; x <= DISPLAY_WIDTH; x++) {
+                ctx.beginPath();
+                ctx.moveTo(x * scaleX, 0);
+                ctx.lineTo(x * scaleX, canvas.height);
+                ctx.stroke();
+            }
+
+            // Horizontal lines
+            for (let y = 0; y <= DISPLAY_HEIGHT; y++) {
+                ctx.beginPath();
+                ctx.moveTo(0, y * scaleY);
+                ctx.lineTo(canvas.width, y * scaleY);
+                ctx.stroke();
+            }
+        }
+
         // Initialize canvas
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        drawGrid(); // Draw initial grid since it's on by default
 
         // WebSocket connection
+        let connectTimeout = null;
+
         function connect() {
             const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
             const wsUrl = `${protocol}//${window.location.host}/draw`;
 
             statusDiv.textContent = 'Connecting...';
             statusDiv.className = 'connecting';
+            reconnectBtn.style.display = 'none';
 
             ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
 
+            // Timeout if connection doesn't open within 5 seconds
+            connectTimeout = setTimeout(() => {
+                if (ws && ws.readyState !== WebSocket.OPEN) {
+                    console.warn('WebSocket connection timeout');
+                    ws.close();
+                    statusDiv.textContent = 'Connection timed out';
+                    statusDiv.className = 'error';
+                    reconnectBtn.style.display = '';
+                }
+            }, 5000);
+
             ws.addEventListener('open', () => {
+                clearTimeout(connectTimeout);
                 statusDiv.textContent = 'Connected';
                 statusDiv.className = 'connected';
+                reconnectBtn.style.display = 'none';
                 console.log('WebSocket connected');
             });
 
-            ws.addEventListener('close', () => {
-                statusDiv.textContent = 'Disconnected';
-                statusDiv.className = 'disconnected';
-                console.log('WebSocket closed');
-                // Reconnect after 2 seconds
-                setTimeout(connect, 2000);
+            ws.addEventListener('close', (ev) => {
+                clearTimeout(connectTimeout);
+                // Code 1013 = Try Again Later (already in use)
+                if (ev.code === 1013) {
+                    statusDiv.textContent = 'Already in use by another client';
+                    statusDiv.className = 'error';
+                } else {
+                    statusDiv.textContent = 'Disconnected';
+                    statusDiv.className = 'disconnected';
+                }
+                reconnectBtn.style.display = '';
+                console.log('WebSocket closed:', ev.code, ev.reason);
             });
 
             ws.addEventListener('error', (err) => {
+                clearTimeout(connectTimeout);
                 statusDiv.textContent = 'Connection Error';
                 statusDiv.className = 'error';
+                reconnectBtn.style.display = '';
                 console.error('WebSocket error:', err);
             });
         }
+
+        reconnectBtn.addEventListener('click', () => {
+            connect();
+        });
 
         // Send command to device
         function sendCommand(bytes) {
@@ -186,17 +297,48 @@
             pixelBuffer = [];
         }
 
+        // Redraw entire canvas from display state
+        function redrawCanvas() {
+            const scaleX = canvas.width / DISPLAY_WIDTH;
+            const scaleY = canvas.height / DISPLAY_HEIGHT;
+
+            // Clear canvas
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Redraw all pixels from state
+            for (const key in displayState) {
+                const pixel = displayState[key];
+                ctx.fillStyle = `rgb(${pixel.r}, ${pixel.g}, ${pixel.b})`;
+                ctx.fillRect(pixel.x * scaleX, pixel.y * scaleY, scaleX, scaleY);
+            }
+
+            // Draw grid on top if enabled
+            if (showGrid) {
+                drawGrid();
+            }
+        }
+
         // Draw pixel on canvas and queue for sending
         function drawPixel(x, y) {
             if (x < 0 || x >= DISPLAY_WIDTH || y < 0 || y >= DISPLAY_HEIGHT) {
                 return;
             }
 
+            // Store in display state
+            const key = `${x},${y}`;
+            displayState[key] = { x, y, r: currentColor.r, g: currentColor.g, b: currentColor.b };
+
             // Draw on canvas (use canvas internal size)
             const scaleX = canvas.width / DISPLAY_WIDTH;
             const scaleY = canvas.height / DISPLAY_HEIGHT;
             ctx.fillStyle = `rgb(${currentColor.r}, ${currentColor.g}, ${currentColor.b})`;
             ctx.fillRect(x * scaleX, y * scaleY, scaleX, scaleY);
+
+            // Redraw grid on top if enabled
+            if (showGrid) {
+                drawGrid();
+            }
 
             // Queue for sending
             pixelBuffer.push({ x, y, ...currentColor });
@@ -334,15 +476,28 @@
 
         // Clear button
         clearBtn.addEventListener('click', () => {
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            // Clear display state
+            displayState = {};
+
+            // Redraw canvas (will be black with optional grid)
+            redrawCanvas();
+
             sendCommand([VERSION, CMD_CLEAR]);
         });
 
         // Fill button
         fillBtn.addEventListener('click', () => {
-            ctx.fillStyle = `rgb(${currentColor.r}, ${currentColor.g}, ${currentColor.b})`;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            // Fill display state
+            for (let y = 0; y < DISPLAY_HEIGHT; y++) {
+                for (let x = 0; x < DISPLAY_WIDTH; x++) {
+                    const key = `${x},${y}`;
+                    displayState[key] = { x, y, r: currentColor.r, g: currentColor.g, b: currentColor.b };
+                }
+            }
+
+            // Redraw canvas
+            redrawCanvas();
+
             sendCommand([VERSION, CMD_FILL, currentColor.r, currentColor.g, currentColor.b]);
         });
 
