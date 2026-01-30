@@ -66,6 +66,15 @@ h1 {
     border: 1px solid #fecaca;
 }
 
+#reconnect-wrapper {
+    text-align: center;
+    margin-bottom: 24px;
+}
+
+#reconnectBtn {
+    flex: none;
+}
+
 #controls {
     margin-bottom: 20px;
 }
@@ -133,53 +142,6 @@ h1 {
     gap: 8px;
     cursor: pointer;
     min-width: auto;
-}
-
-#brushSize {
-    flex: 1;
-    height: 6px;
-    border-radius: 3px;
-    outline: none;
-    -webkit-appearance: none;
-    background: #e5e7eb;
-}
-
-#brushSize::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #1a1a1a;
-    cursor: pointer;
-    transition: all 0.15s ease;
-}
-
-#brushSize::-webkit-slider-thumb:hover {
-    background: #374151;
-    transform: scale(1.1);
-}
-
-#brushSize::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #1a1a1a;
-    cursor: pointer;
-    border: none;
-    transition: all 0.15s ease;
-}
-
-#brushSize::-moz-range-thumb:hover {
-    background: #374151;
-    transform: scale(1.1);
-}
-
-#brushSizeValue {
-    min-width: 24px;
-    text-align: center;
-    font-weight: 600;
-    color: #1a1a1a;
-    font-size: 14px;
 }
 
 .button-group {

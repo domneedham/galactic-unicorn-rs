@@ -11,7 +11,9 @@
     <div id="app">
         <h1>Galactic Unicorn Draw</h1>
         <div id="status">Loading...</div>
-        <button id="reconnectBtn" style="display:none;">Reconnect</button>
+        <div id="reconnect-wrapper" style="display:none;">
+            <button id="reconnectBtn">Reconnect</button>
+        </div>
 
         <div id="main-content">
             <div id="controls">
@@ -38,13 +40,7 @@
                 </div>
             </div>
 
-            <div class="control-group">
-                <label>Brush Size:</label>
-                <input type="range" id="brushSize" min="1" max="5" value="1">
-                <span id="brushSizeValue">1</span>
-            </div>
-
-            <div class="control-group">
+<div class="control-group">
                 <label>
                     <input type="checkbox" id="gridToggle" checked>
                     Show Pixel Grid
@@ -111,8 +107,6 @@
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         const colorPicker = document.getElementById('colorPicker');
-        const brushSize = document.getElementById('brushSize');
-        const brushSizeValue = document.getElementById('brushSizeValue');
         const clearBtn = document.getElementById('clearBtn');
         const fillBtn = document.getElementById('fillBtn');
         const statusDiv = document.getElementById('status');
@@ -124,7 +118,6 @@
         let ws = null;
         let isDrawing = false;
         let currentColor = { r: 255, g: 0, b: 0 };
-        let currentBrushSize = 1;
         let pixelBuffer = [];
         let sendTimer = null;
         let isShiftPressed = false;
@@ -132,12 +125,6 @@
         let drawStartY = null;
         let showGrid = true;
         let displayState = {}; // Stores all pixels currently on display
-
-        // Update brush size display
-        brushSize.addEventListener('input', () => {
-            currentBrushSize = parseInt(brushSize.value);
-            brushSizeValue.textContent = currentBrushSize;
-        });
 
         // Keyboard events for Shift key
         document.addEventListener('keydown', (e) => {
@@ -223,7 +210,7 @@
 
             statusDiv.textContent = 'Connecting...';
             statusDiv.className = 'connecting';
-            reconnectBtn.style.display = 'none';
+            reconnectBtn.parentElement.style.display = 'none';
 
             ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
@@ -235,7 +222,7 @@
                     ws.close();
                     statusDiv.textContent = 'Connection timed out';
                     statusDiv.className = 'error';
-                    reconnectBtn.style.display = '';
+                    reconnectBtn.parentElement.style.display = '';
                 }
             }, 5000);
 
@@ -243,12 +230,21 @@
                 clearTimeout(connectTimeout);
                 statusDiv.textContent = 'Connected';
                 statusDiv.className = 'connected';
-                reconnectBtn.style.display = 'none';
+                reconnectBtn.parentElement.style.display = 'none';
                 console.log('WebSocket connected');
+
+                // Clear both local and remote display to ensure sync
+                displayState = {};
+                redrawCanvas();
+                sendCommand([VERSION, CMD_CLEAR]);
             });
 
             ws.addEventListener('close', (ev) => {
                 clearTimeout(connectTimeout);
+                // Clear local display on disconnect to avoid stale state
+                displayState = {};
+                redrawCanvas();
+
                 // Code 1013 = Try Again Later (already in use)
                 if (ev.code === 1013) {
                     statusDiv.textContent = 'Already in use by another client';
@@ -257,7 +253,7 @@
                     statusDiv.textContent = 'Disconnected';
                     statusDiv.className = 'disconnected';
                 }
-                reconnectBtn.style.display = '';
+                reconnectBtn.parentElement.style.display = '';
                 console.log('WebSocket closed:', ev.code, ev.reason);
             });
 
@@ -265,7 +261,7 @@
                 clearTimeout(connectTimeout);
                 statusDiv.textContent = 'Connection Error';
                 statusDiv.className = 'error';
-                reconnectBtn.style.display = '';
+                reconnectBtn.parentElement.style.display = '';
                 console.error('WebSocket error:', err);
             });
         }
@@ -367,16 +363,6 @@
             }
         }
 
-        // Draw with brush
-        function drawWithBrush(x, y) {
-            const offset = Math.floor(currentBrushSize / 2);
-            for (let dx = -offset; dx <= offset; dx++) {
-                for (let dy = -offset; dy <= offset; dy++) {
-                    drawPixel(x + dx, y + dy);
-                }
-            }
-        }
-
         // Canvas mouse events
         canvas.addEventListener('mousedown', (e) => {
             isDrawing = true;
@@ -391,7 +377,7 @@
             drawStartY = y;
 
             console.log('Mouse down at display coords:', x, y);
-            drawWithBrush(x, y);
+            drawPixel(x, y);
         });
 
         canvas.addEventListener('mousemove', (e) => {
@@ -409,7 +395,7 @@
                 y = constrained.y;
             }
 
-            drawWithBrush(x, y);
+            drawPixel(x, y);
         });
 
         canvas.addEventListener('mouseup', () => {
@@ -443,7 +429,7 @@
             drawStartX = x;
             drawStartY = y;
 
-            drawWithBrush(x, y);
+            drawPixel(x, y);
         });
 
         canvas.addEventListener('touchmove', (e) => {
@@ -463,7 +449,7 @@
                 y = constrained.y;
             }
 
-            drawWithBrush(x, y);
+            drawPixel(x, y);
         });
 
         canvas.addEventListener('touchend', (e) => {
