@@ -6,9 +6,9 @@ use picoserve::{
     AppBuilder, AppRouter,
 };
 
+use core::cell::Cell;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
-use core::cell::Cell;
 
 use crate::draw_app::{WS_CONNECTION_STATE, WS_DATA_CHANNEL};
 
@@ -83,7 +83,12 @@ impl ws::WebSocketCallback for WebsocketDraw {
     ) -> Result<(), W::Error> {
         // Reject if another WebSocket is already active
         let already_active = WS_ACTIVE.lock(|c| {
-            if c.get() { true } else { c.set(true); false }
+            if c.get() {
+                true
+            } else {
+                c.set(true);
+                false
+            }
         });
         if already_active {
             log::warn!("WebSocket draw: already in use, rejecting");
@@ -93,6 +98,12 @@ impl ws::WebSocketCallback for WebsocketDraw {
         log::info!("WebSocket draw: connection accepted");
         // Set connection state to true - this triggers app switch
         WS_CONNECTION_STATE.sender().send(true);
+
+        crate::mqtt::MqttMessage::enqueue_state(
+            crate::mqtt::topics::WEBSOCKET_STATE_TOPIC,
+            "connected",
+        )
+        .await;
 
         let mut buffer = [0u8; 2048];
         loop {
@@ -130,6 +141,13 @@ impl ws::WebSocketCallback for WebsocketDraw {
         // Set connection state to false on disconnect
         WS_ACTIVE.lock(|c| c.set(false));
         WS_CONNECTION_STATE.sender().send(false);
+
+        crate::mqtt::MqttMessage::enqueue_state(
+            crate::mqtt::topics::WEBSOCKET_STATE_TOPIC,
+            "disconnected",
+        )
+        .await;
+
         tx.close(None).await
     }
 }

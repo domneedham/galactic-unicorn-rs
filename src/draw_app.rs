@@ -47,19 +47,6 @@ pub async fn wait_for_disconnection() {
     }
 }
 
-// Previous app tracking
-static PREVIOUS_APP: Mutex<ThreadModeRawMutex, Option<Apps>> = Mutex::new(None);
-
-/// Store the currently active app before switching to Draw app
-pub async fn store_previous_app(app: Apps) {
-    *PREVIOUS_APP.lock().await = Some(app);
-}
-
-/// Retrieve the previous app, returning Clock as fallback
-pub async fn take_previous_app() -> Apps {
-    PREVIOUS_APP.lock().await.take().unwrap_or(Apps::Clock)
-}
-
 pub struct DrawApp {
     display_state: &'static DisplayState,
 }

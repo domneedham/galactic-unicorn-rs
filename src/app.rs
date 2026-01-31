@@ -156,6 +156,9 @@ pub struct AppController {
     /// The current active app.
     active_app: Mutex<ThreadModeRawMutex, Apps>,
 
+    /// Previous app for restoration when auto-switch events end (e.g., WebSocket disconnect)
+    previous_app: Mutex<ThreadModeRawMutex, Option<Apps>>,
+
     /// Display reference.
     display: &'static Display,
 
@@ -264,6 +267,7 @@ impl AppController {
 
         let controller = Self {
             active_app: Mutex::new(Apps::System),
+            previous_app: Mutex::new(None),
             display,
             display_state,
             system_app,
@@ -362,7 +366,7 @@ impl AppController {
                 }
                 embassy_futures::select::Either4::Fourth(_) => {
                     // WS_DISCONNECTED fired - restore previous app
-                    let previous_app = crate::draw_app::take_previous_app().await;
+                    let previous_app = self.previous_app.lock().await.take().unwrap_or(Apps::Clock);
                     *self.active_app.lock().await = previous_app;
                     self.send_mqtt_states().await;
                 }
@@ -391,7 +395,7 @@ impl AppController {
                     let current_app = *self.active_app.lock().await;
                     // Only store previous app if we're switching FROM another app
                     if current_app != Apps::Draw {
-                        crate::draw_app::store_previous_app(current_app).await;
+                        *self.previous_app.lock().await = Some(current_app);
                     }
                     CHANGE_APP_SIGNAL.signal(Apps::Draw);
                 }
