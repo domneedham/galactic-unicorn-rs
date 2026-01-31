@@ -1,8 +1,6 @@
 use chrono::{Datelike, Timelike, Weekday};
 use core::{fmt::Write, str::FromStr};
 use embassy_futures::select::{select3, Either3};
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::signal::Signal;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use embedded_graphics::{
@@ -21,7 +19,7 @@ use unicorn_graphics::UnicornGraphics;
 
 use crate::{
     app::{
-        AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner,
+        AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner,
     },
     buttons::ButtonPress,
     display::{DisplayState, GraphicsBufferWriter, HEIGHT, WIDTH},
@@ -209,13 +207,11 @@ impl UnicornApp for ClockAppState {
         &'static self,
         graphics_buffer: GraphicsBufferWriter,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> AppRunner {
         AppRunner::Clock(ClockAppRunner::new(
             graphics_buffer,
             self,
             inbox,
-            notification_policy,
         ))
     }
 }
@@ -225,7 +221,6 @@ pub struct ClockAppRunner {
     graphics_buffer: GraphicsBufferWriter,
     state: &'static ClockAppState,
     inbox: AppRunnerInboxSubscribers,
-    notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
 }
 
 impl<'a> ClockAppRunner {
@@ -233,13 +228,11 @@ impl<'a> ClockAppRunner {
         graphics_buffer: GraphicsBufferWriter,
         state: &'static ClockAppState,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> Self {
         Self {
             graphics_buffer,
             state,
             inbox,
-            notification_policy,
         }
     }
 }
@@ -247,8 +240,7 @@ impl<'a> ClockAppRunner {
 impl UnicornAppRunner for ClockAppRunner {
     async fn run(&mut self) -> ! {
         // Signal that this app is happy to be interrupted at all times
-        self.notification_policy
-            .signal(AppNotificationPolicy::AllowAll);
+        crate::app::AppNotificationPolicy::set(crate::app::AppNotificationPolicy::AllowAll);
 
         let mut hue_offset: f32 = 0.0;
         let mut colors: Option<Vec<Rgb888, 41>> = None;

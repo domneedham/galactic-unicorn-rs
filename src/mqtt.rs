@@ -143,6 +143,9 @@ pub mod topics {
     pub const CLOCK_APP_SET_TOPIC: &str = concat!(CLOCK_APP_BASE_TOPIC, "/", SET);
     pub const CLOCK_APP_STATE_TOPIC: &str = concat!(CLOCK_APP_BASE_TOPIC, "/", STATE);
 
+    pub const WEBSOCKET_BASE_TOPIC: &str = concat!(BASE_MQTT_TOPIC, "/websocket");
+    pub const WEBSOCKET_STATE_TOPIC: &str = concat!(WEBSOCKET_BASE_TOPIC, "/", STATE);
+
     pub const NTP_SYNC_TOPIC: &str = concat!(BASE_MQTT_TOPIC, "/system/ntp/sync");
 }
 
@@ -700,6 +703,31 @@ pub mod homeassistant {
   "cmd_t": "{AUTO_BRIGHTNESS_SET_TOPIC}",
   "stat_t": "{AUTO_BRIGHTNESS_STATE_TOPIC}",
   "uniq_id": "{DEVICE_ID}_auto_brightness_01"
+}}"#
+        )
+        .unwrap();
+        MqttMessage::enqueue_hass(topic, &payload).await;
+
+        // websocket connection state
+        let topic = concat!(
+            HASS_BASE_MQTT_TOPIC,
+            "/binary_sensor/",
+            DEVICE_ID,
+            "/websocket/config"
+        );
+        let mut payload = String::<256>::new();
+        write!(
+            payload,
+            r#"
+{{
+  "dev" : {{
+    "ids": "{DEVICE_ID}"
+  }},
+  "name": "WebSocket",
+  "stat_t": "{WEBSOCKET_STATE_TOPIC}",
+  "pl_on": "connected",
+  "pl_off": "disconnected",
+  "uniq_id": "{DEVICE_ID}_websocket_01"
 }}"#
         )
         .unwrap();

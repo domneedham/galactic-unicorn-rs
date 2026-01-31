@@ -61,9 +61,7 @@ pub mod ntp {
     use super::Time;
 
     const POOL_NTP_ADDR: &str = "pool.ntp.org";
-    // Try local gateway first (often runs NTP), then Google's time server
-    const LOCAL_GATEWAY_IP: [u8; 4] = [192, 168, 1, 1];
-    const FALLBACK_NTP_IP: [u8; 4] = [216, 239, 35, 0];
+    const GOOGLE_NTP_IP: [u8; 4] = [216, 239, 35, 0];
 
     /// Signal for request to sync system with NTP.
     pub static SYNC_SIGNAL: Signal<ThreadModeRawMutex, bool> = Signal::new();
@@ -115,7 +113,8 @@ pub mod ntp {
                 .to_socket_addrs()
                 .map_err(|_| SntpcError::ToSocketAddrs)?;
             let addr = addr_iter.next().ok_or(SntpcError::NoAddr)?;
-            match self.sock
+            match self
+                .sock
                 .send_to(buf, sock_addr_to_emb_endpoint(addr))
                 .await
             {
@@ -212,10 +211,7 @@ pub mod ntp {
 
     /// NTP task for syncing to NTP. Waits for network stack to be ready first.
     #[embassy_executor::task]
-    pub async fn ntp_worker(
-        time: &'static Time,
-        _app_state: &'static crate::system::SystemState,
-    ) {
+    pub async fn ntp_worker(time: &'static Time, _app_state: &'static crate::system::SystemState) {
         log::info!("NTP worker: Waiting for network...");
         let stack = crate::network::get_network_stack().await;
         log::info!("NTP worker: Starting");
@@ -251,7 +247,12 @@ pub mod ntp {
         let servers_to_try = get_ntp_servers_to_try(stack).await;
 
         for (i, sock_addr) in servers_to_try.iter().enumerate() {
-            log::info!("Trying NTP server {} of {}: {:?}", i + 1, servers_to_try.len(), sock_addr);
+            log::info!(
+                "Trying NTP server {} of {}: {:?}",
+                i + 1,
+                servers_to_try.len(),
+                sock_addr
+            );
 
             match try_ntp_sync(stack, time, *sock_addr).await {
                 Ok(()) => {
@@ -281,27 +282,14 @@ pub mod ntp {
             let _ = servers.push(addr);
         }
 
-        // Try local gateway
-        let gateway_addr = SocketAddr::new(
-            no_std_net::IpAddr::V4(no_std_net::Ipv4Addr::new(
-                LOCAL_GATEWAY_IP[0],
-                LOCAL_GATEWAY_IP[1],
-                LOCAL_GATEWAY_IP[2],
-                LOCAL_GATEWAY_IP[3],
-            )),
-            123
-        );
-        let _ = servers.push(gateway_addr);
-
-        // Try external Google NTP
         let fallback_addr = SocketAddr::new(
             no_std_net::IpAddr::V4(no_std_net::Ipv4Addr::new(
-                FALLBACK_NTP_IP[0],
-                FALLBACK_NTP_IP[1],
-                FALLBACK_NTP_IP[2],
-                FALLBACK_NTP_IP[3],
+                GOOGLE_NTP_IP[0],
+                GOOGLE_NTP_IP[1],
+                GOOGLE_NTP_IP[2],
+                GOOGLE_NTP_IP[3],
             )),
-            123
+            123,
         );
         let _ = servers.push(fallback_addr);
 
@@ -309,7 +297,11 @@ pub mod ntp {
     }
 
     /// Try to sync time with a specific NTP server
-    async fn try_ntp_sync(stack: Stack<'static>, time: &'static Time, sock_addr: SocketAddr) -> Result<(), SntpcError> {
+    async fn try_ntp_sync(
+        stack: Stack<'static>,
+        time: &'static Time,
+        sock_addr: SocketAddr,
+    ) -> Result<(), SntpcError> {
         log::info!("Connecting to NTP server: {:?}", sock_addr);
 
         // NTP packets are only 48 bytes, so 512 bytes is more than enough
@@ -338,16 +330,15 @@ pub mod ntp {
         // Add timeout to NTP request (10 seconds)
         let ntp_result = embassy_futures::select::select(
             get_time(sock_addr, ntp_socket, ntp_context),
-            Timer::after_secs(10)
-        ).await;
+            Timer::after_secs(10),
+        )
+        .await;
 
         let ntp_result = match ntp_result {
-            embassy_futures::select::Either::First(result) => {
-                result.map_err(|e| {
-                    log::error!("NTP get_time failed: {:?}", e);
-                    e
-                })?
-            }
+            embassy_futures::select::Either::First(result) => result.map_err(|e| {
+                log::error!("NTP get_time failed: {:?}", e);
+                e
+            })?,
             embassy_futures::select::Either::Second(_) => {
                 log::error!("NTP request timed out after 10 seconds");
                 return Err(SntpcError::Sntc(sntpc::Error::Network));
@@ -356,11 +347,10 @@ pub mod ntp {
 
         log::info!("NTP response received, timestamp: {}", ntp_result.seconds);
 
-        let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0)
-            .ok_or_else(|| {
-                log::error!("Failed to parse NTP timestamp: {}", ntp_result.seconds);
-                SntpcError::BadNtpResponse
-            })?;
+        let now = DateTime::from_timestamp(ntp_result.seconds as i64, 0).ok_or_else(|| {
+            log::error!("Failed to parse NTP timestamp: {}", ntp_result.seconds);
+            SntpcError::BadNtpResponse
+        })?;
         let now = now.with_timezone(&GB);
 
         log::info!("Setting time to: {:?}", now);
@@ -380,12 +370,14 @@ pub mod ntp {
                         match addr {
                             embassy_net::IpAddress::Ipv4(ipv4) => {
                                 let octets = *ipv4.as_octets();
-                                let ipv4_addr = no_std_net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
-                                let sock_addr = SocketAddr::new(no_std_net::IpAddr::V4(ipv4_addr), 123);
+                                let ipv4_addr = no_std_net::Ipv4Addr::new(
+                                    octets[0], octets[1], octets[2], octets[3],
+                                );
+                                let sock_addr =
+                                    SocketAddr::new(no_std_net::IpAddr::V4(ipv4_addr), 123);
                                 log::info!("DNS resolved to: {:?}", sock_addr);
                                 return Ok(sock_addr);
-                            }
-                            // Currently only IPv4 is supported by embassy-net in this configuration
+                            } // Currently only IPv4 is supported by embassy-net in this configuration
                         }
                     } else {
                         log::error!("DNS returned empty response");

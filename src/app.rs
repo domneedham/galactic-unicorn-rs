@@ -1,7 +1,6 @@
 use core::str::FromStr;
 
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber};
@@ -38,7 +37,7 @@ pub static ACTIVE_LAYER: Watch<ThreadModeRawMutex, DisplayLayer, 2> = Watch::new
 /// All apps that can be switched to.
 #[derive(Copy, Clone, PartialEq, Eq, EnumString, IntoStaticStr)]
 #[strum(ascii_case_insensitive)]
-enum Apps {
+pub enum Apps {
     /// The system app. This should only be changed to by the system.
     System,
 
@@ -51,7 +50,7 @@ enum Apps {
     /// The MQTT app.
     Mqtt,
 
-    /// The draw app.
+    /// The draw app (WebSocket draw).
     Draw,
 }
 
@@ -102,7 +101,6 @@ pub trait UnicornApp {
         &'static self,
         graphics_buffer: GraphicsBufferWriter,
         inbox: AppRunnerInboxSubscribers,
-        notification_policy: Signal<ThreadModeRawMutex, AppNotificationPolicy>,
     ) -> AppRunner;
 }
 
@@ -112,7 +110,22 @@ pub trait UnicornAppRunner {
     fn release_writer(self) -> GraphicsBufferWriter;
 }
 
-static CHANGE_APP_SIGNAL: Signal<ThreadModeRawMutex, Apps> = Signal::new();
+pub static CHANGE_APP_SIGNAL: Signal<ThreadModeRawMutex, Apps> = Signal::new();
+/// Shared notification policy state. Apps signal their policy here when they start running.
+pub static NOTIFICATION_POLICY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+impl AppNotificationPolicy {
+    pub fn set(policy: Self) {
+        NOTIFICATION_POLICY.store(policy as u8, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn get() -> Self {
+        match NOTIFICATION_POLICY.load(core::sync::atomic::Ordering::Relaxed) {
+            1 => Self::DenyNormal,
+            _ => Self::AllowAll,
+        }
+    }
+}
 
 /// Task that monitors network state and switches from System app to Clock app
 /// when network connects for the first time.
@@ -142,6 +155,9 @@ async fn network_connected_switch_task(system_state: &'static SystemState) {
 pub struct AppController {
     /// The current active app.
     active_app: Mutex<ThreadModeRawMutex, Apps>,
+
+    /// Previous app for restoration when auto-switch events end (e.g., WebSocket disconnect)
+    previous_app: Mutex<ThreadModeRawMutex, Option<Apps>>,
 
     /// Display reference.
     display: &'static Display,
@@ -251,6 +267,7 @@ impl AppController {
 
         let controller = Self {
             active_app: Mutex::new(Apps::System),
+            previous_app: Mutex::new(None),
             display,
             display_state,
             system_app,
@@ -301,65 +318,86 @@ impl AppController {
             let mut runner = match *self.active_app.lock().await {
                 Apps::System => {
                     self.system_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
                 Apps::Clock => {
                     self.clock_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
                 Apps::Effects => {
                     self.effects_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
                 Apps::Mqtt => {
                     self.mqtt_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
                 Apps::Draw => {
                     self.draw_app
-                        .create_runner(writer, inbox, Signal::new())
+                        .create_runner(writer, inbox)
                         .await
                 }
             };
 
             // 2. Drive the App and the Forwarder
             // If forward_and_intercept returns SwitchApp, the whole select finishes
-            let result = embassy_futures::select::select3(
+            let result = embassy_futures::select::select4(
                 runner.run(),
                 self.handle_events(),
                 CHANGE_APP_SIGNAL.wait(),
+                crate::draw_app::wait_for_disconnection(),
             )
             .await;
 
             // 3. App Switch triggered: Recover the writer from the runner
-            // Because DrawAppRunner is dropped here, all its futures stop
+            // Because the runner is dropped here, all its futures stop
             *self.graphics_writer.lock().await = Some(runner.release_writer());
 
-            // Update active_app if CHANGE_APP_SIGNAL fired
-            if let embassy_futures::select::Either3::Third(new_app) = result {
-                *self.active_app.lock().await = new_app;
-                self.send_mqtt_states().await;
+            // Update active_app based on which signal fired
+            match result {
+                embassy_futures::select::Either4::Third(new_app) => {
+                    // CHANGE_APP_SIGNAL fired - switch to requested app
+                    *self.active_app.lock().await = new_app;
+                    self.send_mqtt_states().await;
+                }
+                embassy_futures::select::Either4::Fourth(_) => {
+                    // WS_DISCONNECTED fired - restore previous app
+                    let previous_app = self.previous_app.lock().await.take().unwrap_or(Apps::Clock);
+                    *self.active_app.lock().await = previous_app;
+                    self.send_mqtt_states().await;
+                }
+                _ => {}
             }
         }
     }
 
     async fn handle_events(&self) -> ! {
         loop {
-            match select(
+            match embassy_futures::select::select3(
                 self.btn_rx.lock().await.next_message_pure(),
                 self.mqtt_rx.lock().await.next_message_pure(),
+                crate::draw_app::wait_for_connection(),
             )
             .await
             {
-                Either::First((button, press)) => {
+                embassy_futures::select::Either3::First((button, press)) => {
                     self.handle_button_event(button, press).await;
                 }
-                Either::Second(msg) => {
+                embassy_futures::select::Either3::Second(msg) => {
                     self.handle_mqtt_event(msg).await;
+                }
+                embassy_futures::select::Either3::Third(_) => {
+                    // WebSocket connected - switch to Draw (or restart if already on Draw)
+                    let current_app = *self.active_app.lock().await;
+                    // Only store previous app if we're switching FROM another app
+                    if current_app != Apps::Draw {
+                        *self.previous_app.lock().await = Some(current_app);
+                    }
+                    CHANGE_APP_SIGNAL.signal(Apps::Draw);
                 }
             }
         }
@@ -415,14 +453,8 @@ impl AppController {
                 return;
             }
 
-            // For other apps, decide if we should show as notification
-            let should_show = match active_app {
-                Apps::Draw => {
-                    // Draw app denies normal notifications when actively being used
-                    false
-                }
-                _ => true, // All other apps allow notifications
-            };
+            // For other apps, decide based on the active app's notification policy
+            let should_show = AppNotificationPolicy::get() == AppNotificationPolicy::AllowAll;
 
             if !should_show {
                 // Store the message but don't display it as notification

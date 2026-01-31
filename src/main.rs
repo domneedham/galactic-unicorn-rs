@@ -12,6 +12,7 @@ mod clock_app;
 mod config;
 mod display;
 mod draw_app;
+mod draw_protocol;
 mod effects_app;
 mod fonts;
 mod mqtt;
@@ -20,6 +21,7 @@ mod network;
 mod system;
 mod system_app;
 mod time;
+mod web;
 
 use buttons::ButtonPress;
 use display::{Display, DisplayState};
@@ -36,12 +38,17 @@ use panic_halt as _;
 
 use galactic_unicorn_embassy::pins::UnicornButtonPins;
 use galactic_unicorn_embassy::pins::UnicornDisplayPins;
+use picoserve::make_static;
+use picoserve::AppBuilder;
+use picoserve::AppRouter;
 
 use crate::buttons::button_d_task;
 use crate::buttons::{
     brightness_down_task, brightness_up_task, button_a_task, button_b_task, button_c_task,
 };
 use crate::mqtt::MqttReceiveMessage;
+use crate::web::web_task;
+use crate::web::WebAppProps;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -74,14 +81,7 @@ async fn main(spawner: Spawner) {
         sleep: p.PIN_27,
     };
 
-    let display = Display::new(
-        p.PIO0,
-        p.DMA_CH0,
-        p.ADC,
-        p.USB,
-        display_pins,
-        sensor_pins,
-    );
+    let display = Display::new(p.PIO0, p.DMA_CH0, p.ADC, p.USB, display_pins, sensor_pins);
 
     let display_state = DisplayState::new();
     let system_state = system::SystemState::new();
@@ -90,11 +90,19 @@ async fn main(spawner: Spawner) {
     let clock_app = clock_app::ClockAppState::new(display_state, time);
     let effects_app = effects_app::EffectsApp::new();
     let mqtt_app = mqtt_app::MqttApp::new(display_state);
-    let draw_app = draw_app::DrawApp::new(system_state, display_state);
+    let draw_app = draw_app::DrawApp::new(display_state);
+
+    // Initialize WebSocket connection state so wait_for_connection/disconnection work correctly
+    draw_app::WS_CONNECTION_STATE.sender().send(false);
 
     // Button channel: 4 capacity, 1 subscriber (AppController), 9 publishers (button tasks)
-    static BUTTON_CHANNEL: PubSubChannel<ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 9> =
-        PubSubChannel::new();
+    static BUTTON_CHANNEL: PubSubChannel<
+        ThreadModeRawMutex,
+        (UnicornButtons, ButtonPress),
+        4,
+        1,
+        9,
+    > = PubSubChannel::new();
 
     let app_controller = app::AppController::new(
         display,
@@ -154,7 +162,14 @@ async fn main(spawner: Spawner) {
     // Spawn network init in background (doesn't block)
     spawner
         .spawn(network::network_init_task(
-            system_state, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO1, p.DMA_CH1, spawner,
+            system_state,
+            p.PIN_23,
+            p.PIN_24,
+            p.PIN_25,
+            p.PIN_29,
+            p.PIO1,
+            p.DMA_CH1,
+            spawner,
         ))
         .unwrap();
 
@@ -201,25 +216,16 @@ async fn main(spawner: Spawner) {
         ))
         .unwrap();
 
-    // spawner
-    //     .spawn(app::process_mqtt_messages_task(
-    //         app_controller,
-    //         MQTT_APP_CHANNEL.subscriber().unwrap(),
-    //     ))
-    //     .unwrap();
-
-    // spawner
-    //     .spawn(system::process_mqtt_messages_task(
-    //         MQTT_SYSTEM_CHANNEL.subscriber().unwrap(),
-    //     ))
-    //     .unwrap();
-
     spawner
         .spawn(mqtt::homeassistant::hass_discovery_task(
             display,
             app_controller,
         ))
         .unwrap();
+
+    let web_app = make_static!(AppRouter<WebAppProps>, WebAppProps.build_app());
+    spawner.must_spawn(web_task(0, web_app));
+    spawner.must_spawn(web_task(1, web_app));
 
     app_controller.run().await;
 }
