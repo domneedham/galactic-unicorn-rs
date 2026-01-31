@@ -387,9 +387,12 @@ impl AppController {
                     self.handle_mqtt_event(msg).await;
                 }
                 embassy_futures::select::Either3::Third(_) => {
-                    // WebSocket connected - store current app and switch to Draw
+                    // WebSocket connected - switch to Draw (or restart if already on Draw)
                     let current_app = *self.active_app.lock().await;
-                    crate::draw_app::store_previous_app(current_app).await;
+                    // Only store previous app if we're switching FROM another app
+                    if current_app != Apps::Draw {
+                        crate::draw_app::store_previous_app(current_app).await;
+                    }
                     CHANGE_APP_SIGNAL.signal(Apps::Draw);
                 }
             }

@@ -1,13 +1,12 @@
 use embassy_sync::{
-    blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex,
-    watch::Watch,
+    blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex, watch::Watch,
 };
 use heapless::Vec;
 use static_cell::make_static;
 
 use crate::{
     app::{
-        AppRunner, AppRunnerInboxSubscribers, Apps, UnicornApp,
+        AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, Apps, UnicornApp,
         UnicornAppRunner,
     },
     display::{DisplayState, GraphicsBufferWriter},
@@ -19,7 +18,8 @@ pub static WS_DATA_CHANNEL: Channel<ThreadModeRawMutex, Vec<u8, 2048>, 8> = Chan
 
 // WebSocket connection state: true = connected, false = disconnected
 // The Watch allows querying current state and waiting for changes
-pub static WS_CONNECTION_STATE: Watch<ThreadModeRawMutex, bool, 2> = Watch::new();
+// Capacity 3: one for handle_events(), one for run() loop disconnect detection, one for DrawAppRunner
+pub static WS_CONNECTION_STATE: Watch<ThreadModeRawMutex, bool, 3> = Watch::new();
 
 /// Wait for WebSocket to connect (state becomes true)
 pub async fn wait_for_connection() {
@@ -109,13 +109,13 @@ impl DrawAppRunner {
 impl UnicornAppRunner for DrawAppRunner {
     async fn run(&mut self) -> ! {
         // Set notification policy to deny normal notifications
-        crate::app::AppNotificationPolicy::set(crate::app::AppNotificationPolicy::DenyNormal);
+        AppNotificationPolicy::set(AppNotificationPolicy::DenyNormal);
 
         // Show "Waiting for connection" until first WebSocket data arrives
         self.graphics_buffer.clear().await;
 
         let data = {
-            use embassy_futures::select::{select, Either};
+            use embassy_futures::select::{select3, Either3};
 
             let scroll_future = async {
                 loop {
@@ -131,9 +131,20 @@ impl UnicornAppRunner for DrawAppRunner {
                 }
             };
 
-            match select(scroll_future, WS_DATA_CHANNEL.receive()).await {
-                Either::First(_) => unreachable!(),
-                Either::Second(data) => data,
+            match select3(
+                scroll_future,
+                WS_DATA_CHANNEL.receive(),
+                wait_for_connection(),
+            )
+            .await
+            {
+                Either3::First(_) => unreachable!(),
+                Either3::Second(data) => data,
+                Either3::Third(_) => {
+                    // WebSocket connected - clear screen and wait for first data
+                    self.graphics_buffer.clear().await;
+                    WS_DATA_CHANNEL.receive().await
+                }
             }
         };
 
