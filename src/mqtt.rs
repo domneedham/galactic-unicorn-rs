@@ -176,6 +176,7 @@ pub mod clients {
         },
         MqttMessage, MqttReceiveMessage, SEND_CHANNEL,
     };
+    use crate::config::{SENSOR_HUMIDITY_TOPIC, SENSOR_PM2_TOPIC, SENSOR_TEMPERATURE_TOPIC};
     use crate::config::{
         DEVICE_ID, HASS_BASE_MQTT_TOPIC, MQTT_BROKER_A1, MQTT_BROKER_A2, MQTT_BROKER_A3,
         MQTT_BROKER_A4, MQTT_BROKER_PORT, MQTT_PASSWORD, MQTT_USERNAME,
@@ -369,6 +370,7 @@ pub mod clients {
         display_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         app_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
         system_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
+        sensor_publisher: Publisher<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
     ) {
         log::info!("MQTT receive client: Waiting for network...");
         let stack = crate::network::get_network_stack().await;
@@ -389,7 +391,7 @@ pub mod clients {
         )
         .await;
 
-        let topics: Vec<&str, 8> = Vec::from_slice(&[
+        let mut topics: Vec<&str, 12> = Vec::from_slice(&[
             BRIGHTNESS_SET_TOPIC,
             RGB_SET_TOPIC,
             TEXT_SET_TOPIC,
@@ -401,11 +403,22 @@ pub mod clients {
         ])
         .unwrap();
 
+        // Conditionally subscribe to sensor topics
+        if let Some(topic) = SENSOR_TEMPERATURE_TOPIC {
+            topics.push(topic).ok();
+        }
+        if let Some(topic) = SENSOR_HUMIDITY_TOPIC {
+            topics.push(topic).ok();
+        }
+        if let Some(topic) = SENSOR_PM2_TOPIC {
+            topics.push(topic).ok();
+        }
+
         log::info!(
             "MQTT receive client: Subscribing to {} topics",
             topics.len()
         );
-        match client.subscribe_to_topics::<8>(&topics).await {
+        match client.subscribe_to_topics::<12>(&topics).await {
             Ok(_) => {
                 log::info!("MQTT receive client: Successfully subscribed to all topics");
                 MqttMessage::enqueue_debug("Subscribed to topics").await
@@ -439,7 +452,16 @@ pub mod clients {
                                 message.body
                             );
 
-                            if mqtt_message.0.contains("display") {
+                            let is_sensor = SENSOR_TEMPERATURE_TOPIC
+                                .map_or(false, |t| mqtt_message.0 == t)
+                                || SENSOR_HUMIDITY_TOPIC
+                                    .map_or(false, |t| mqtt_message.0 == t)
+                                || SENSOR_PM2_TOPIC.map_or(false, |t| mqtt_message.0 == t);
+
+                            if is_sensor {
+                                log::debug!("MQTT receive client: Publishing to sensor channel");
+                                sensor_publisher.publish(message).await;
+                            } else if mqtt_message.0.contains("display") {
                                 log::debug!("MQTT receive client: Publishing to display channel");
                                 display_publisher.publish(message).await;
                             } else if mqtt_message.0.contains("app") {
