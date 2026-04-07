@@ -2,7 +2,7 @@ use chrono::{Datelike, Timelike, Weekday};
 use core::{fmt::Write, str::FromStr};
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::{
     geometry::{Point, Size},
     mono_font::{iso_8859_13::FONT_5X7, MonoTextStyle},
@@ -18,13 +18,12 @@ use strum_macros::{EnumString, IntoStaticStr};
 use unicorn_graphics::UnicornGraphics;
 
 use crate::{
-    app::{
-        AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner,
-    },
+    app::{AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner},
     buttons::ButtonPress,
     display::{DisplayState, GraphicsBufferWriter, HEIGHT, WIDTH},
     fonts::DrawOntoGraphics,
     mqtt::{topics::CLOCK_APP_STATE_TOPIC, MqttMessage, MqttReceiveMessage},
+    sensors::SensorState,
     time::Time,
 };
 
@@ -49,6 +48,9 @@ pub struct ClockAppState {
 
     /// The current effect of the clock.
     effect: Mutex<NoopRawMutex, ClockEffect>,
+
+    /// Reference to sensor state for periodic display.
+    sensor_state: &'static SensorState,
 }
 
 /// Trait for defining text width constant on the clock app struct.
@@ -64,11 +66,16 @@ impl AlternateTextWidth for ClockAppState {
 impl ClockAppState {
     /// Create the static ref to clock app state.
     /// Must only be called once or will panic.
-    pub fn new(display_state: &'static DisplayState, time: &'static Time) -> &'static Self {
+    pub fn new(
+        display_state: &'static DisplayState,
+        time: &'static Time,
+        sensor_state: &'static SensorState,
+    ) -> &'static Self {
         make_static!(Self {
             display_state,
             time,
             effect: Mutex::new(ClockEffect::Color),
+            sensor_state,
         })
     }
 
@@ -208,19 +215,19 @@ impl UnicornApp for ClockAppState {
         graphics_buffer: GraphicsBufferWriter,
         inbox: AppRunnerInboxSubscribers,
     ) -> AppRunner {
-        AppRunner::Clock(ClockAppRunner::new(
-            graphics_buffer,
-            self,
-            inbox,
-        ))
+        AppRunner::Clock(ClockAppRunner::new(graphics_buffer, self, inbox))
     }
 }
+
+/// How often to show sensor readings on the clock face.
+const SENSOR_DISPLAY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// Runner for the clock app. Handles the display loop.
 pub struct ClockAppRunner {
     graphics_buffer: GraphicsBufferWriter,
     state: &'static ClockAppState,
     inbox: AppRunnerInboxSubscribers,
+    last_sensor_display: Option<Instant>,
 }
 
 impl<'a> ClockAppRunner {
@@ -233,6 +240,7 @@ impl<'a> ClockAppRunner {
             graphics_buffer,
             state,
             inbox,
+            last_sensor_display: None,
         }
     }
 }
@@ -395,6 +403,27 @@ impl UnicornAppRunner for ClockAppRunner {
                     }
                 }
             }
+
+            // Periodically show sensor readings if any are configured and available.
+            let should_show = match self.last_sensor_display {
+                None => true,
+                Some(last) => last.elapsed() >= SENSOR_DISPLAY_INTERVAL,
+            };
+
+            if should_show {
+                if let Some(summary) = self.state.sensor_state.summary() {
+                    self.graphics_buffer
+                        .display_text(
+                            &summary,
+                            None,
+                            None,
+                            Some(Duration::from_secs(5)),
+                            self.state.display_state,
+                        )
+                        .await;
+                    self.last_sensor_display = Some(Instant::now());
+                }
+            }
         }
     }
 
@@ -404,21 +433,45 @@ impl UnicornAppRunner for ClockAppRunner {
 }
 
 impl<'a> ClockAppRunner {
-    /// Handle a button press - show the full date
-    async fn handle_button_press(&mut self, event: (galactic_unicorn_embassy::buttons::UnicornButtons, ButtonPress)) {
+    /// Handle a button press.
+    /// Short press: show the full date.
+    /// Long press: show sensor readings (if any available).
+    async fn handle_button_press(
+        &mut self,
+        event: (
+            galactic_unicorn_embassy::buttons::UnicornButtons,
+            ButtonPress,
+        ),
+    ) {
         let (_button, press) = event;
-        if press == ButtonPress::Short {
-            // Show the full date on short press
-            let date_str = self.state.get_date_str().await;
-            self.graphics_buffer
-                .display_text(
-                    &date_str,
-                    None,
-                    None,
-                    Some(Duration::from_secs(2)),
-                    self.state.display_state,
-                )
-                .await;
+        match press {
+            ButtonPress::Short => {
+                let date_str = self.state.get_date_str().await;
+                self.graphics_buffer
+                    .display_text(
+                        &date_str,
+                        None,
+                        None,
+                        Some(Duration::from_secs(3)),
+                        self.state.display_state,
+                    )
+                    .await;
+            }
+            ButtonPress::Long => {
+                if let Some(summary) = self.state.sensor_state.summary() {
+                    self.graphics_buffer
+                        .display_text(
+                            &summary,
+                            None,
+                            None,
+                            Some(Duration::from_secs(5)),
+                            self.state.display_state,
+                        )
+                        .await;
+                    self.last_sensor_display = Some(Instant::now());
+                }
+            }
+            ButtonPress::Double => {}
         }
     }
 }

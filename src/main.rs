@@ -19,6 +19,7 @@ mod menu;
 mod mqtt;
 mod mqtt_app;
 mod network;
+mod sensors;
 mod system;
 mod system_app;
 mod time;
@@ -88,7 +89,8 @@ async fn main(spawner: Spawner) {
     let system_state = system::SystemState::new();
     let system_app = system_app::SystemApp::new(display_state);
     let time = time::Time::new();
-    let clock_app = clock_app::ClockAppState::new(display_state, time);
+    let sensor_state = sensors::SensorState::new();
+    let clock_app = clock_app::ClockAppState::new(display_state, time, sensor_state);
     let effects_app = effects_app::EffectsApp::new();
     let mqtt_app = mqtt_app::MqttApp::new(display_state);
     let draw_app = draw_app::DrawApp::new(display_state);
@@ -183,6 +185,9 @@ async fn main(spawner: Spawner) {
     static MQTT_SYSTEM_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
         PubSubChannel::new();
 
+    static MQTT_SENSOR_CHANNEL: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
+        PubSubChannel::new();
+
     // Spawn display state management tasks
     spawner
         .spawn(display::auto_brightness_task(display, display_state))
@@ -207,6 +212,7 @@ async fn main(spawner: Spawner) {
             MQTT_DISPLAY_CHANNEL.publisher().unwrap(),
             MQTT_APP_CHANNEL.publisher().unwrap(),
             MQTT_SYSTEM_CHANNEL.publisher().unwrap(),
+            MQTT_SENSOR_CHANNEL.publisher().unwrap(),
         ))
         .unwrap();
 
@@ -214,6 +220,13 @@ async fn main(spawner: Spawner) {
         .spawn(display::process_mqtt_messages_task(
             display_state,
             MQTT_DISPLAY_CHANNEL.subscriber().unwrap(),
+        ))
+        .unwrap();
+
+    spawner
+        .spawn(sensors::process_sensor_mqtt_task(
+            sensor_state,
+            MQTT_SENSOR_CHANNEL.subscriber().unwrap(),
         ))
         .unwrap();
 
