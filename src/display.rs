@@ -28,8 +28,6 @@ use crate::mqtt::{
 pub const WIDTH: usize = 53;
 pub const HEIGHT: usize = 11;
 
-// --- 0. Dirty Rectangle Tracking ---
-
 /// Tracks the bounding rectangle of changed pixels
 #[derive(Copy, Clone, Debug)]
 pub struct DirtyRect {
@@ -113,8 +111,6 @@ impl DirtyRect {
     }
 }
 
-// --- 1. Global State (The Source of Truth) ---
-
 pub struct DisplayState {
     pub brightness: Watch<ThreadModeRawMutex, u8, 4>,
     pub color: Watch<ThreadModeRawMutex, Rgb888, 4>,
@@ -192,6 +188,7 @@ impl GraphicsBufferReader {
     /// # Performance
     /// Use this when you need direct access without copying the buffer.
     /// The mutex will be locked until the returned guard is dropped.
+    #[allow(dead_code)]
     pub async fn lock(
         &self,
     ) -> impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
@@ -199,6 +196,7 @@ impl GraphicsBufferReader {
     }
 
     /// Wait for an update signal, then get read-only access to the buffer.
+    #[allow(dead_code)]
     pub async fn wait_and_lock(
         &self,
     ) -> impl core::ops::Deref<Target = UnicornGraphics<WIDTH, HEIGHT>> + '_ {
@@ -238,6 +236,7 @@ impl GraphicsBufferReader {
     }
 
     /// Get dirty bounds and clear them atomically
+    #[allow(dead_code)]
     pub async fn consume_dirty_bounds(&self) -> Option<(usize, usize, usize, usize)> {
         let mut dirty = self.dirty_rect.lock().await;
         let bounds = dirty.get_bounds();
@@ -396,8 +395,6 @@ impl GraphicsBufferWriter {
     }
 }
 
-// --- 3. The Hardware Wrapper (The Driver) ---
-
 pub struct Display {
     galactic_unicorn: Mutex<ThreadModeRawMutex, GalacticUnicorn<'static>>,
 }
@@ -438,9 +435,7 @@ impl Display {
         } else {
             // Check if dirty bounds cover entire screen or are None
             let is_full_screen = match dirty_bounds {
-                Some((x1, y1, x2, y2)) => {
-                    x1 == 0 && y1 == 0 && x2 >= WIDTH - 1 && y2 >= HEIGHT - 1
-                }
+                Some((x1, y1, x2, y2)) => x1 == 0 && y1 == 0 && x2 >= WIDTH - 1 && y2 >= HEIGHT - 1,
                 None => true,
             };
 
@@ -458,8 +453,6 @@ impl Display {
         self.galactic_unicorn.lock().await.get_light_level().await
     }
 }
-
-// --- 5. Background Tasks ---
 
 #[embassy_executor::task]
 pub async fn auto_brightness_task(display: &'static Display, state: &'static DisplayState) {
@@ -481,9 +474,7 @@ pub async fn auto_brightness_task(display: &'static Display, state: &'static Dis
     }
 }
 
-// --- MQTT Message Processing Task ---
 // This task processes incoming MQTT messages for display settings
-
 #[embassy_executor::task]
 pub async fn process_mqtt_messages_task(
     state: &'static DisplayState,
@@ -525,10 +516,8 @@ pub async fn process_mqtt_messages_task(
     }
 }
 
-// --- State Sync Task ---
 // This task watches the Global State. If the brightness or color
 // changes (from a button, a sensor, or a local app), it sends the update to MQTT.
-
 #[embassy_executor::task]
 pub async fn state_to_mqtt_broadcast_task(state: &'static DisplayState) {
     let mut bright_sub = state.brightness.receiver().unwrap();
@@ -566,17 +555,16 @@ pub async fn state_to_mqtt_broadcast_task(state: &'static DisplayState) {
     }
 }
 
-// --- Render Task ---
-
 #[embassy_executor::task]
 pub async fn render_task(
     display: &'static Display,
     state: &'static DisplayState,
     app_buffer: GraphicsBufferReader,
     notify_buffer: GraphicsBufferReader,
+    menu_buffer: GraphicsBufferReader,
 ) {
     use crate::app::{DisplayLayer, ACTIVE_LAYER};
-    use embassy_futures::select::Either;
+    use embassy_futures::select::Either3 as EitherThree;
 
     let mut layer_sub = ACTIVE_LAYER.receiver().unwrap();
     let mut bright_sub = state.brightness.receiver().unwrap();
@@ -590,11 +578,15 @@ pub async fn render_task(
                 match layer {
                     DisplayLayer::App => {
                         let (pixels, dirty) = app_buffer.wait_and_lock_with_dirty().await;
-                        Either::First((pixels, dirty))
+                        EitherThree::First((pixels, dirty))
                     }
                     DisplayLayer::Notification => {
                         let (pixels, dirty) = notify_buffer.wait_and_lock_with_dirty().await;
-                        Either::Second((pixels, dirty))
+                        EitherThree::Second((pixels, dirty))
+                    }
+                    DisplayLayer::Menu => {
+                        let (pixels, dirty) = menu_buffer.wait_and_lock_with_dirty().await;
+                        EitherThree::Third((pixels, dirty))
                     }
                 }
             },
@@ -606,10 +598,13 @@ pub async fn render_task(
             Either3::First(result) => {
                 // Atomically got both buffer and dirty bounds
                 match result {
-                    Either::First((ref pixels, dirty_bounds)) => {
+                    EitherThree::First((ref pixels, dirty_bounds)) => {
                         display.update(&**pixels, brightness, dirty_bounds).await
                     }
-                    Either::Second((ref pixels, dirty_bounds)) => {
+                    EitherThree::Second((ref pixels, dirty_bounds)) => {
+                        display.update(&**pixels, brightness, dirty_bounds).await
+                    }
+                    EitherThree::Third((ref pixels, dirty_bounds)) => {
                         display.update(&**pixels, brightness, dirty_bounds).await
                     }
                 };
@@ -625,6 +620,10 @@ pub async fn render_task(
                         let (graphics, dirty_bounds) = notify_buffer.lock_with_dirty().await;
                         display.update(&graphics, brightness, dirty_bounds).await;
                     }
+                    DisplayLayer::Menu => {
+                        let (graphics, dirty_bounds) = menu_buffer.lock_with_dirty().await;
+                        display.update(&graphics, brightness, dirty_bounds).await;
+                    }
                 };
             }
             Either3::Third(new_brightness) => {
@@ -637,6 +636,11 @@ pub async fn render_task(
                     }
                     DisplayLayer::Notification => {
                         let (graphics, _) = notify_buffer.lock_with_dirty().await;
+                        // Dirty bounds consumed but ignored since full update
+                        display.update(&graphics, new_brightness, None).await;
+                    }
+                    DisplayLayer::Menu => {
+                        let (graphics, _) = menu_buffer.lock_with_dirty().await;
                         // Dirty bounds consumed but ignored since full update
                         display.update(&graphics, new_brightness, None).await;
                     }

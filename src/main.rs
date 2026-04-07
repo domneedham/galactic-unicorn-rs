@@ -15,6 +15,7 @@ mod draw_app;
 mod draw_protocol;
 mod effects_app;
 mod fonts;
+mod menu;
 mod mqtt;
 mod mqtt_app;
 mod network;

@@ -31,8 +31,9 @@ use crate::system_app::{SystemApp, SystemAppRunner};
 pub enum DisplayLayer {
     App,
     Notification,
+    Menu,
 }
-pub static ACTIVE_LAYER: Watch<ThreadModeRawMutex, DisplayLayer, 2> = Watch::new();
+pub static ACTIVE_LAYER: Watch<ThreadModeRawMutex, DisplayLayer, 3> = Watch::new();
 
 /// All apps that can be switched to.
 #[derive(Copy, Clone, PartialEq, Eq, EnumString, IntoStaticStr)]
@@ -55,7 +56,7 @@ pub enum Apps {
 }
 
 pub struct AppRunnerInboxSubscribers {
-    pub buttons: Subscriber<'static, ThreadModeRawMutex, ButtonPress, 4, 1, 1>,
+    pub buttons: Subscriber<'static, ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 1>,
     pub mqtt: Subscriber<'static, ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
 }
 
@@ -187,6 +188,9 @@ pub struct AppController {
     // Notification graphics writer (for overlay messages)
     notification_writer: Mutex<ThreadModeRawMutex, GraphicsBufferWriter>,
 
+    // Menu controller
+    menu_controller: &'static crate::menu::MenuController,
+
     // Inputs - wrapped in Mutex for interior mutability
     btn_rx: Mutex<
         ThreadModeRawMutex,
@@ -199,7 +203,7 @@ pub struct AppController {
 
     // App-Side Channels (Bridge)
     // These act as the internal pipes to the current runner
-    app_btn_chan: &'static PubSubChannel<ThreadModeRawMutex, ButtonPress, 4, 1, 1>,
+    app_btn_chan: &'static PubSubChannel<ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 1>,
     app_mqtt_chan: &'static PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1>,
 }
 
@@ -222,6 +226,7 @@ impl AppController {
         // Signals for graphics buffer updates (just notifications, not data)
         static APP_GRAPHICS_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
         static NOTIFICATION_GRAPHICS_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+        static MENU_GRAPHICS_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
         // Shared pixel buffers (Mutex-protected)
         use crate::display::DirtyRect;
@@ -230,15 +235,19 @@ impl AppController {
             Mutex::new(UnicornGraphics::new());
         static NOTIFICATION_PIXELS: Mutex<CriticalSectionRawMutex, UnicornGraphics<53, 11>> =
             Mutex::new(UnicornGraphics::new());
+        static MENU_PIXELS: Mutex<CriticalSectionRawMutex, UnicornGraphics<53, 11>> =
+            Mutex::new(UnicornGraphics::new());
 
         // Dirty rectangle tracking (Mutex-protected)
         static APP_DIRTY_RECT: Mutex<CriticalSectionRawMutex, DirtyRect> =
             Mutex::new(DirtyRect::new());
         static NOTIFICATION_DIRTY_RECT: Mutex<CriticalSectionRawMutex, DirtyRect> =
             Mutex::new(DirtyRect::new());
+        static MENU_DIRTY_RECT: Mutex<CriticalSectionRawMutex, DirtyRect> =
+            Mutex::new(DirtyRect::new());
 
         // App-side channels for forwarding events to current runner
-        static APP_BTN_CHAN: PubSubChannel<ThreadModeRawMutex, ButtonPress, 4, 1, 1> =
+        static APP_BTN_CHAN: PubSubChannel<ThreadModeRawMutex, (UnicornButtons, ButtonPress), 4, 1, 1> =
             PubSubChannel::new();
         static APP_MQTT_CHAN: PubSubChannel<ThreadModeRawMutex, MqttReceiveMessage, 8, 1, 1> =
             PubSubChannel::new();
@@ -246,6 +255,7 @@ impl AppController {
         // Create graphics buffers as statics so we can get 'static writers
         static APP_GRAPHICS: StaticCell<GraphicsBuffer> = StaticCell::new();
         static NOTIFICATION_GRAPHICS: StaticCell<GraphicsBuffer> = StaticCell::new();
+        static MENU_GRAPHICS: StaticCell<GraphicsBuffer> = StaticCell::new();
 
         // Initialize graphics buffers with shared mutex access
         let app_graphics = APP_GRAPHICS.init(GraphicsBuffer::new(
@@ -258,12 +268,24 @@ impl AppController {
             &NOTIFICATION_GRAPHICS_SIGNAL,
             &NOTIFICATION_DIRTY_RECT,
         ));
+        let menu_graphics = MENU_GRAPHICS.init(GraphicsBuffer::new(
+            &MENU_PIXELS,
+            &MENU_GRAPHICS_SIGNAL,
+            &MENU_DIRTY_RECT,
+        ));
 
         // Get readers and writers (both access the same underlying mutex)
         let app_reader = app_graphics.reader();
         let notification_reader = notification_graphics.reader();
+        let menu_reader = menu_graphics.reader();
         let app_writer = app_graphics.writer();
         let notification_writer = notification_graphics.writer();
+        let menu_writer = menu_graphics.writer();
+
+        // Create menu controller with its graphics buffer
+        static MENU_CONTROLLER: StaticCell<crate::menu::MenuController> = StaticCell::new();
+        let menu_controller =
+            MENU_CONTROLLER.init(crate::menu::MenuController::new(display_state, menu_writer));
 
         let controller = Self {
             active_app: Mutex::new(Apps::System),
@@ -277,6 +299,7 @@ impl AppController {
             draw_app,
             graphics_writer: Mutex::new(Some(app_writer)),
             notification_writer: Mutex::new(notification_writer),
+            menu_controller,
             btn_rx: Mutex::new(btn_rx),
             mqtt_rx: Mutex::new(mqtt_rx),
             app_btn_chan: &APP_BTN_CHAN,
@@ -294,6 +317,7 @@ impl AppController {
                 controller.display_state,
                 app_reader,
                 notification_reader,
+                menu_reader,
             ))
             .unwrap();
 
@@ -404,41 +428,78 @@ impl AppController {
     }
 
     async fn handle_button_event(&self, button: UnicornButtons, press: ButtonPress) {
-        let active_app = *self.active_app.lock().await;
+        let menu_open = self.menu_controller.is_open().await;
 
-        // Handle brightness buttons
+        if menu_open {
+            // Menu is open - route to menu navigation
+            match (button, press) {
+                (UnicornButtons::SwitchA, ButtonPress::Short) => {
+                    self.menu_controller.select_previous().await;
+                    return;
+                }
+                (UnicornButtons::SwitchB, ButtonPress::Short) => {
+                    self.menu_controller.select_next().await;
+                    return;
+                }
+                (UnicornButtons::SwitchD, ButtonPress::Short) => {
+                    // Confirm selection, switch app, close menu
+                    let selected_app = self.menu_controller.get_selected_app().await;
+                    CHANGE_APP_SIGNAL.signal(selected_app);
+                    self.menu_controller.close().await;
+                    return;
+                }
+                (UnicornButtons::SwitchD, ButtonPress::Long) => {
+                    // Close menu without changing app
+                    self.menu_controller.close().await;
+                    return;
+                }
+                (UnicornButtons::BrightnessUp | UnicornButtons::BrightnessDown, _) => {
+                    // Brightness buttons work in menu - fall through to global handling
+                }
+                _ => {
+                    // Ignore other button events while menu is open
+                    return;
+                }
+            }
+        } else {
+            // Menu is closed - check for menu open trigger
+            if matches!((button, press), (UnicornButtons::SwitchD, ButtonPress::Long)) {
+                self.menu_controller.open().await;
+                return;
+            }
+
+            // Forward ALL button events to active app
+            self.app_btn_chan
+                .publisher()
+                .unwrap()
+                .publish((button, press))
+                .await;
+
+            // Brightness buttons also handled globally (continue to brightness handling below)
+            if !matches!(
+                button,
+                UnicornButtons::BrightnessUp | UnicornButtons::BrightnessDown
+            ) {
+                return;
+            }
+        }
+
+        // Global brightness handling (works both in and out of menu)
         match button {
             UnicornButtons::BrightnessUp => {
                 let mut brightness_sub = self.display_state.brightness.receiver().unwrap();
                 let current = brightness_sub.get().await;
                 let new_brightness = current.saturating_add(25).min(255);
                 self.display_state.brightness.sender().send(new_brightness);
-                return;
             }
             UnicornButtons::BrightnessDown => {
                 let mut brightness_sub = self.display_state.brightness.receiver().unwrap();
                 let current = brightness_sub.get().await;
                 let new_brightness = current.saturating_sub(25);
                 self.display_state.brightness.sender().send(new_brightness);
-                return;
             }
             _ => {}
         }
-
-        let target_app = match button {
-            UnicornButtons::SwitchA => Apps::Clock,
-            UnicornButtons::SwitchB => Apps::Effects,
-            UnicornButtons::SwitchC => Apps::Mqtt,
-            UnicornButtons::SwitchD => Apps::Draw,
-            _ => return,
-        };
-
-        if target_app != active_app {
-            CHANGE_APP_SIGNAL.signal(target_app);
-            return;
-        }
-
-        self.app_btn_chan.publisher().unwrap().publish(press).await;
     }
 
     async fn handle_mqtt_event(&self, message: MqttReceiveMessage) {
