@@ -1,13 +1,10 @@
-use embassy_sync::{
-    blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex, watch::Watch,
-};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, watch::Watch};
 use heapless::Vec;
 use static_cell::make_static;
 
 use crate::{
     app::{
-        AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, Apps, UnicornApp,
-        UnicornAppRunner,
+        AppNotificationPolicy, AppRunner, AppRunnerInboxSubscribers, UnicornApp, UnicornAppRunner,
     },
     display::{DisplayState, GraphicsBufferWriter},
     draw_protocol,

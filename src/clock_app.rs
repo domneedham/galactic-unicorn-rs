@@ -405,7 +405,8 @@ impl UnicornAppRunner for ClockAppRunner {
 
 impl<'a> ClockAppRunner {
     /// Handle a button press - show the full date
-    async fn handle_button_press(&mut self, press: ButtonPress) {
+    async fn handle_button_press(&mut self, event: (galactic_unicorn_embassy::buttons::UnicornButtons, ButtonPress)) {
+        let (_button, press) = event;
         if press == ButtonPress::Short {
             // Show the full date on short press
             let date_str = self.state.get_date_str().await;
